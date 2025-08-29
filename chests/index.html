@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Slots</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+
+  <body>
+    <script src="https://pixijs.download/release/pixi.js"></script>
+    <script type="module">
+      const INITIAL_VALUES = {
+        ASSETS: {
+          background: "./background.webp", // BASE64
+          logo: "",
+          button: "./button.svg",
+          popup: "./popup.svg",
+
+          chest: "./chest.png",
+          glow: "./glow.png",
+        },
+        TEXT: {
+          FONT: {
+            name: "Sansita",
+          },
+          button_get: "GET",
+          popup_title: "Rewards!",
+          popup_description: "Rewards description asdasdasdasdasd!",
+        },
+        SETTING: {
+          chests: ["60$", "90$", "100$", "120$", "150$", "200$"],
+        },
+      };
+      const CHESTS_MECHANICS = async ({
+        scene,
+        PIXI,
+        INITIAL_VALUES,
+        MAP = {},
+        PARENT_NODE = document.body,
+      }) => {
+        const { ASSETS, TEXT, SETTING } = INITIAL_VALUES;
+        const { FONT = { name: "Arial", url: null } } = TEXT;
+
+        // загрузка шрифта
+        await loadFont(FONT);
+
+        // Create the application helper and add its render target to the page
+        const app = scene || new PIXI.Application();
+        globalThis.__PIXI_APP__ = app;
+        if (!scene) {
+          await app.init({
+            resizeTo: window,
+            antialias: true,
+          });
+          document.body.appendChild(app.canvas);
+        }
+        const assets = Object.keys(ASSETS)
+          .map((key) => ASSETS[key])
+          .filter((v) => v);
+
+        await PIXI.Assets.load(assets);
+        const background = PIXI.Sprite.from(ASSETS.background);
+        const button = PIXI.Sprite.from(ASSETS.button);
+        const logo = ASSETS.logo
+          ? PIXI.Sprite.from(ASSETS.logo)
+          : new PIXI.Sprite(PIXI.Texture.EMPTY);
+        const popup = PIXI.Sprite.from(ASSETS.popup);
+
+        if (ASSETS.logo) {
+          const scaleX = 199 / logo.texture.width;
+          const scaleY = 104 / logo.texture.height;
+          const scale = Math.min(scaleX, scaleY); // выбрать наименьший масштаб, чтобы вписаться
+          logo.scale.set(scale);
+        }
+
+        const aspectRatioBackground = background.width / background.height;
+        background.anchor.set(0.5);
+
+        background.x = app.screen.width / 2;
+        background.y = app.screen.height / 2;
+
+        app.stage.addChild(background);
+
+        const containerGame = new PIXI.Container();
+        app.stage.addChild(containerGame); // Добавляем containerGame на сцену
+
+        // Логотип
+        const containerLogo = new PIXI.Container();
+
+        logo.anchor.set(0.5);
+        containerLogo.addChild(logo);
+        containerLogo.position.set(0, 50); // Размещаем немного выше
+        containerGame.addChild(containerLogo);
+
+        // Кнопка
+        const containerButton = new PIXI.Container();
+        const button_get = new PIXI.Text(TEXT.button_get, {
+          fontFamily: FONT.name,
+          fill: 0xffffff,
+          fontSize: 40,
+          align: "center",
+          breakWords: true,
+          wordWrap: true,
+          wordWrapWidth: button.width - 20,
+          stroke: { color: "#2F41E1", width: 4 },
+        });
+
+        button.anchor.set(0.5);
+        button.eventMode = "static";
+        button.cursor = "pointer";
+        button.interactive = true;
+        button.on("pointerdown", () => {
+          startPlay();
+        });
+        button_get.anchor.set(0.5);
+
+        containerButton.addChild(button);
+
+        containerButton.addChild(button_get);
+        containerButton.position.set(0, 634); // Размещаем немного ниже
+        containerGame.addChild(containerButton);
+        containerButton.renderable = false;
+
+        // Chests
+        const containerChests = new PIXI.Container();
+        const chestColumnCount = 3;
+        const chestRowCount = 2;
+        const chestRowGap = 2;
+        const chestColumnGap = 2;
+
+        MAP.chests = [];
+        for (let i = 0; i < chestRowCount; i++) {
+          for (let j = 0; j < chestColumnCount; j++) {
+            const containerChest = new PIXI.Container();
+            const containerPrize = new PIXI.Container();
+            const chest = PIXI.Sprite.from(ASSETS.chest);
+            const glow = PIXI.Sprite.from(ASSETS.glow);
+            const prize = new PIXI.Text(SETTING.chests[i + j], {
+              fontFamily: FONT.name,
+              fill: 0xffea00,
+              fontSize: 36,
+              breakWords: true,
+              wordWrap: true,
+              wordWrapWidth: chest.width - 20,
+              align: "center",
+              stroke: { color: "#581D1D", width: 4 },
+            });
+            prize.anchor.set(0.5);
+            chest.anchor.set(0.5);
+            glow.anchor.set(0.5);
+            containerPrize.addChild(glow);
+            containerPrize.addChild(prize);
+            containerPrize.visible = false;
+            containerChest.addChild(containerPrize);
+            containerChest.addChild(chest);
+            containerChest.x = j * (chest.width + chestColumnGap);
+            containerChest.y = i * (chest.height + chestRowGap);
+            containerChest.interactive = true;
+            containerChest.cursor = "pointer";
+            containerChest.on("pointerdown", () => openChest(containerChest));
+            containerChests.addChild(containerChest);
+            MAP.chests.push({ sprite: chest, prize });
+          }
+        }
+        const chestExample = PIXI.Sprite.from(ASSETS.chest);
+        containerChests.position.set(
+          (chestExample.width - containerChests.width) / 2,
+          300
+        );
+        containerGame.addChild(containerChests);
+
+        let openedChestCount = 0;
+
+        function openChest(param) {
+          const [containerPrize, chest] = param.children;
+          if (chest.visible && !chest.animation) {
+            chest.animation = true;
+            containerPrize.visible = true;
+            containerPrize.alpha = 0;
+            const ticker = new PIXI.Ticker();
+            const maxRotation = 0.4;
+            let time = 0;
+            ticker.add(({ deltaTime }) => {
+              time += deltaTime;
+              chest.rotation = Math.sin(time) * maxRotation;
+              const koef = time / 300;
+              chest.alpha -= koef;
+              containerPrize.alpha += koef;
+              if (chest.alpha <= 0) {
+                ticker.stop();
+                chest.visible = false;
+                openedChestCount++;
+                chest.animation = false;
+                if (openedChestCount === chestRowCount * chestColumnCount)
+                  winnerFlow();
+              }
+            });
+            ticker.start();
+          }
+        }
+
+        const winnerFlow = () => {
+          win = true;
+          containerChests.visible = false;
+          containerButton.renderable = true;
+          centerContainerGame();
+          ticker.start();
+        };
+
+        // Function to start playing.
+        function startPlay() {
+          if (win) {
+            if ("openLink" in window) window.openLink();
+            else {
+              filter.alpha = 0;
+              containerPopup.y = app.screen.height / containerGame.scale.x;
+              containerPopup.visible = false;
+              win = "";
+            }
+          }
+          containerChests.visible = true;
+          containerButton.renderable = false;
+          clearChests();
+        }
+
+        function clearChests() {
+          for (let i = 0; i < containerChests.children.length; i++) {
+            const [containerPrize, chest] =
+              containerChests.children[i].children;
+            chest.visible = true;
+            chest.alpha = 1;
+            chest.rotation = 0;
+            containerPrize.visible = false;
+            containerPrize.alpha = 0;
+            openedChestCount = 0;
+          }
+        }
+
+        // popup с выигрешем
+        let win = null;
+
+        const containerPopup = new PIXI.Container();
+        const text_popup = new PIXI.Text(TEXT.popup_title, {
+          fontFamily: FONT.name,
+          fill: 0xffffff,
+          fontSize: 40,
+          align: "center",
+          breakWords: true,
+          wordWrap: true,
+          wordWrapWidth: popup.width - 20,
+          stroke: { color: "#2F41E1", width: 4 },
+        });
+        const text_description_popup = new PIXI.Text(TEXT.popup_description, {
+          fontFamily: FONT.name,
+          fill: 0xffffff,
+          fontSize: 30,
+          breakWords: true,
+          wordWrap: true,
+          wordWrapWidth: popup.width - 20,
+          align: "center",
+
+          stroke: { color: "#2F41E1", width: 4 },
+        });
+        popup.anchor.set(0.5);
+        text_popup.anchor.set(0.5);
+        text_description_popup.anchor.set(0.5);
+        containerPopup.position.set(0, containerGame.height);
+        text_popup.y = -130;
+
+        const filter = new PIXI.AlphaFilter(1);
+
+        containerPopup.filters = [filter];
+        filter.alpha = 0; // <-- tween this property
+        containerPopup.addChild(popup);
+        containerPopup.addChild(text_popup);
+        containerPopup.addChild(text_description_popup);
+        containerPopup.visible = false;
+        containerGame.addChild(containerPopup);
+
+        // Get random Integer
+        // Reusable
+        function getRandomInt(min, max) {
+          const minCeiled = Math.ceil(min);
+          const maxFloored = Math.floor(max);
+          return Math.floor(
+            Math.random() * (maxFloored - minCeiled) + minCeiled
+          );
+        }
+
+        // Ticker Popup upper
+        // Reusable
+        const ticker = new PIXI.Ticker();
+        ticker.add(() => {
+          if (!win) return;
+
+          // Показываем попап и нужные кнопки
+          containerPopup.visible = true;
+
+          // Плавно увеличиваем прозрачность фильтра
+          if (filter.alpha < 1) {
+            filter.alpha += 0.05;
+          }
+
+          // Двигаем попап вверх, пока он не дойдёт до центра containerGame
+          const targetY = containerGame.height / 2 / containerGame.scale.x;
+          if (containerPopup.y > targetY) {
+            containerPopup.y -= 10;
+          }
+
+          // Если всё появилось и на месте — останавливаем анимацию
+          if (filter.alpha >= 1 && containerPopup.y <= targetY) {
+            ticker.stop();
+          }
+        });
+
+        // Font loader by url or name in googlefont
+        // Reusable
+        async function loadFont({ name, url }) {
+          if (!url) {
+            const link = document.createElement("link");
+            link.rel = "stylesheet";
+            link.href = `https://fonts.googleapis.com/css2?family=${name.replace(
+              / /g,
+              "+"
+            )}&display=swap`;
+            document.head.appendChild(link);
+          } else {
+            const font = new FontFace(name, `url(${url})`);
+            await font.load();
+            document.fonts.add(font);
+          }
+          const check = document.fonts.check(`12px "${name}"`);
+          if (!check) {
+            await document.fonts.load(`12px "${name}"`);
+          }
+        }
+
+        // Center gameContainer
+        // Reusable
+        function centerContainerGame() {
+          // Получаем локальные границы containerGame (когда все элементы уже добавлены)
+          const bounds = containerGame.getLocalBounds();
+          containerGame.pivot.set(bounds.width / 2, bounds.height / 2);
+          containerGame.position.set(
+            (app.screen.width + containerGame.width) / 2,
+            app.screen.height / 2
+          );
+        }
+
+        // Reziable containerGame and background object-cover
+        // Reusable
+        const resizeObserver = new ResizeObserver(() => {
+          if (!app) return;
+          const designWidth = 390;
+          const designHeight = 844;
+          const w = app.screen.width;
+          const h = app.screen.height;
+          const shouldScale = w < designWidth || h < designHeight;
+          if (shouldScale) {
+            const scale = Math.min(w / designWidth, h / designHeight);
+            containerGame.scale.set(scale);
+          } else {
+            containerGame.scale.set(1);
+          }
+          background.x = app.screen.width / 2;
+          background.y = app.screen.height / 2;
+          background.width = app.screen.width;
+          background.height = app.screen.width / aspectRatioBackground;
+          if (app.screen.width / aspectRatioBackground < app.screen.height) {
+            background.width = aspectRatioBackground * app.screen.height;
+            background.height = app.screen.height;
+          }
+          centerContainerGame();
+        });
+        resizeObserver.observe(PARENT_NODE);
+
+        // MAP EDITABLE
+        // text
+        MAP.button_get = button_get;
+        MAP.popup_title = text_popup;
+        MAP.popup_description = text_description_popup;
+        // assets
+        MAP.background = background;
+        MAP.button = button;
+        MAP.logo = logo;
+        MAP.popup = popup;
+      };
+      CHESTS_MECHANICS({ PIXI, INITIAL_VALUES });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Wheel</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+
+  <body>
+    <script src="https://pixijs.download/release/pixi.js"></script>
+    <script type="module">
+      const INITIAL_VALUES = {
+        ASSETS: {
+          background: "./background.webp", // BASE64
+          logo: "./logo.jpeg",
+          button: "./button.svg",
+          wheel: "./wheel.svg",
+          layout: "./layout.svg",
+          arrow: "./arrow.svg",
+          popup: "./popup.svg",
+        },
+        TEXT: {
+          FONT: {
+            name: "Sansita",
+          },
+          button_play: "PLAY",
+          button_get: "GET",
+          popup_title: "Rewards!",
+          popup_description: "Rewards description!",
+        },
+        SETTING: {
+          slots: ["60$", "90$", "100$", "120$", "150$", "200$"],
+        },
+      };
+      const WHEEL_MECHANICS = async ({
+        scene,
+        PIXI,
+        INITIAL_VALUES,
+        MAP = {},
+      }) => {
+        const { ASSETS, TEXT, SETTING } = INITIAL_VALUES;
+        const { FONT = { name: "Arial", url: null } } = TEXT;
+
+        // загрузка шрифта
+        await loadFontIfNeeded(FONT);
+
+        // Create the application helper and add its render target to the page
+        const app = scene || new PIXI.Application();
+        // globalThis.__PIXI_APP__ = app
+        if (!scene) {
+          await app.init({
+            resizeTo: window,
+            antialias: true,
+          });
+          document.body.appendChild(app.canvas);
+        }
+        const assets = Object.keys(ASSETS).map((key) => ASSETS[key]);
+
+        await PIXI.Assets.load(assets);
+        const background = PIXI.Sprite.from(ASSETS.background);
+        const button = PIXI.Sprite.from(ASSETS.button);
+        const wheel = PIXI.Sprite.from(ASSETS.wheel);
+        const layout = PIXI.Sprite.from(ASSETS.layout);
+        const arrow = PIXI.Sprite.from(ASSETS.arrow);
+        const logo = PIXI.Sprite.from(ASSETS.logo);
+        const popup = PIXI.Sprite.from(ASSETS.popup);
+
+        const aspectRatioBackground = background.width / background.height;
+        background.anchor.set(0.5);
+
+        background.x = app.screen.width / 2;
+        background.y = app.screen.height / 2;
+
+        app.stage.addChild(background);
+
+        //
+        //
+        //
+        //
+        //
+        //
+        //
+
+        const containerGame = new PIXI.Container();
+        app.stage.addChild(containerGame); // Добавляем containerGame на сцену
+
+        // Логотип
+        const containerLogo = new PIXI.Container();
+
+        logo.anchor.set(0.5);
+        containerLogo.addChild(logo);
+        containerLogo.position.set(0, 50); // Размещаем немного выше
+        containerGame.addChild(containerLogo);
+
+        // Кнопка
+        const containerButton = new PIXI.Container();
+        const button_play = new PIXI.Text(TEXT.button_play, {
+          fontFamily: FONT.name,
+          fill: 0xffffff,
+          fontSize: 40,
+          align: "center",
+          stroke: { color: "#2F41E1", width: 4 },
+        });
+        const button_get = new PIXI.Text(TEXT.button_get, {
+          fontFamily: FONT.name,
+          fill: 0xffffff,
+          fontSize: 40,
+          align: "center",
+          stroke: { color: "#2F41E1", width: 4 },
+        });
+        button_get.visible = false;
+
+        button.anchor.set(0.5);
+        button.cursor = "pointer";
+        button.interactive = true;
+        button.on("pointerdown", () => {
+          ticker.start();
+          if (!win) {
+            if (timeout <= 0 && !start) {
+              timeout = getRandomInt(40, 60);
+              start = true;
+            }
+          } else if (win) {
+            if ("openLink" in window) window.openLink();
+            else {
+              win = "";
+              filter.alpha = 0;
+              containerPopup.y = app.screen.height / containerGame.scale.x;
+              button_play.visible = true;
+              button_get.visible = false;
+              containerPopup.visible = false;
+              containerDesc.visible = true;
+              containerArrow.visible = true;
+            }
+          }
+        });
+        button_play.anchor.set(0.5);
+        button_get.anchor.set(0.5);
+
+        containerButton.addChild(button);
+
+        containerButton.addChild(button_play);
+        containerButton.addChild(button_get);
+
+        containerButton.position.set(0, 634); // Размещаем немного ниже
+        containerGame.addChild(containerButton);
+
+        // Колесо
+        const containerDesc = new PIXI.Container();
+        const containerWheel = new PIXI.Container();
+        wheel.anchor.set(0.5);
+        layout.anchor.set(0.5);
+
+        containerDesc.addChild(layout);
+        containerWheel.addChild(wheel);
+        containerDesc.position.set(0, 340); // Центрируем колесо
+
+        MAP.slots = [];
+        for (let i = 0; i < SETTING.slots.length; i++) {
+          const containerText = new PIXI.Container();
+          const textSlot = new PIXI.Text(SETTING.slots[i], {
+            fontFamily: FONT.name,
+            fill: 0xffffff,
+            fontSize: 25,
+            align: "center",
+            stroke: { color: "#2F41E1", width: 4 },
+          });
+          textSlot.anchor.set(0.5);
+          textSlot.x = 90;
+
+          containerText.addChild(textSlot);
+          MAP.slots.push(textSlot);
+          containerText.angle = (360 / SETTING.slots.length) * i + 30;
+          containerWheel.addChild(containerText);
+        }
+
+        containerDesc.addChild(containerWheel);
+        containerGame.addChild(containerDesc);
+
+        // // Стрелка итога
+        const containerArrow = new PIXI.Container();
+        arrow.anchor.set(0.5);
+
+        containerArrow.position.set(0, 200); // Центрируем колесо
+
+        containerGame.addChild(containerArrow);
+        containerArrow.addChild(arrow);
+
+        // popup с выигрешем
+        let win = null;
+
+        const containerPopup = new PIXI.Container();
+        const text_popup = new PIXI.Text(TEXT.popup_title, {
+          fontFamily: FONT.name,
+          fill: 0xffffff,
+          fontSize: 40,
+          align: "center",
+          stroke: { color: "#2F41E1", width: 4 },
+        });
+        const text_description_popup = new PIXI.Text(TEXT.popup_description, {
+          fontFamily: FONT.name,
+          fill: 0xffffff,
+          fontSize: 36,
+          align: "center",
+          stroke: { color: "#2F41E1", width: 4 },
+        });
+        popup.anchor.set(0.5);
+        text_popup.anchor.set(0.5);
+        text_description_popup.anchor.set(0.5);
+        containerPopup.position.set(0, containerGame.height);
+        text_popup.y = -130;
+
+        const filter = new PIXI.AlphaFilter(1);
+
+        containerPopup.filters = [filter];
+        filter.alpha = 0; // <-- tween this property
+        containerPopup.addChild(popup);
+        containerPopup.addChild(text_popup);
+        containerPopup.addChild(text_description_popup);
+        containerPopup.visible = false;
+        containerGame.addChild(containerPopup);
+
+        // Поведение
+        const getRandomInt = (min, max) => {
+          const minCeiled = Math.ceil(min);
+          const maxFloored = Math.floor(max);
+          return Math.floor(
+            Math.random() * (maxFloored - minCeiled) + minCeiled
+          );
+        };
+
+        let timeout = 0;
+        let start = false;
+
+        app.ticker.add((time) => {
+          if (start) {
+            containerWheel.angle += +(time.deltaTime * timeout).toFixed(5);
+            let koef = 0.5;
+            if (timeout < 5) koef = 0.05;
+            if (timeout < 2) koef = 0.025;
+            if (timeout < 0.5) koef = 0.01;
+            timeout = timeout - time.deltaTime * koef;
+
+            if (timeout <= 0) {
+              start = false;
+              timeout = 0;
+              const angle = (containerWheel.angle - 180) % 360;
+              for (let i = 0; i < SETTING.slots.length; i++) {
+                const start = (360 / SETTING.slots.length) * i - 30;
+                const end = (360 / SETTING.slots.length) * (i + 1) + 30;
+                if (angle >= start && angle < end) {
+                  win =
+                    SETTING.slots[SETTING.slots.length - i] ?? SETTING.slots[0];
+                  text_description_popup.text =
+                    text_description_popup.text || win;
+                  break;
+                }
+              }
+            }
+          }
+        });
+
+        const ticker = new PIXI.Ticker();
+        ticker.add((time) => {
+          if (win) {
+            let koef = 0.03;
+            const height = containerGame.height / 2;
+            containerPopup.visible = true;
+            containerDesc.visible = false;
+            containerArrow.visible = false;
+            button_play.visible = false;
+            button_get.visible = true;
+            if (filter.alpha <= 1) filter.alpha += time.deltaTime * koef;
+
+            if (
+              containerGame.height / 2 / containerGame.scale.x <
+              containerPopup.y
+            )
+              containerPopup.y -= 10;
+            else if (filter.alpha >= 1) ticker.stop();
+          }
+        });
+        ticker.start();
+
+        async function loadFontIfNeeded({ name, url }) {
+          if (!url) {
+            const link = document.createElement("link");
+            link.rel = "stylesheet";
+            link.href = `https://fonts.googleapis.com/css2?family=${name.replace(
+              / /g,
+              "+"
+            )}&display=swap`;
+            document.head.appendChild(link);
+          } else {
+            const font = new FontFace(name, `url(${url})`);
+            await font.load();
+            document.fonts.add(font);
+          }
+          if (!isFontLoaded(name)) {
+            await document.fonts.load(`12px "${name}"`);
+          }
+        }
+
+        function isFontLoaded(name) {
+          return document.fonts.check(`12px "${name}"`);
+        }
+
+        function centerContainerGame() {
+          // Получаем локальные границы containerGame (когда все элементы уже добавлены)
+          const bounds = containerGame.getLocalBounds();
+          containerGame.pivot.set(bounds.width / 2, bounds.height / 2);
+          containerGame.position.set(
+            (app.screen.width + containerGame.width) / 2,
+            app.screen.height / 2
+          );
+        }
+
+        function resizeBackground() {
+          const designWidth = 390;
+          const designHeight = 844;
+          const w = app.screen.width;
+          const h = app.screen.height;
+
+          const shouldScale = w < designWidth || h < designHeight;
+
+          if (shouldScale) {
+            const scale = Math.min(w / designWidth, h / designHeight);
+            containerGame.scale.set(scale);
+          } else {
+            containerGame.scale.set(1);
+          }
+
+          background.x = app.screen.width / 2;
+          background.y = app.screen.height / 2;
+
+          background.width = app.screen.width;
+          background.height = app.screen.width / aspectRatioBackground;
+          if (app.screen.width / aspectRatioBackground < app.screen.height) {
+            background.width = aspectRatioBackground * app.screen.height;
+            background.height = app.screen.height;
+          }
+          centerContainerGame();
+        }
+
+        resizeBackground();
+        window.addEventListener("resize", resizeBackground);
+
+        // MAP EDITABLE
+        MAP.button_play = button_play;
+        MAP.button_get = button_get;
+        MAP.popup_title = text_popup;
+        MAP.popup_description = text_description_popup;
+        MAP.background = background;
+        MAP.button = button;
+        MAP.wheel = wheel;
+        MAP.layout = layout;
+        MAP.arrow = arrow;
+        MAP.logo = logo;
+        MAP.popup = popup;
+      };
+      WHEEL_MECHANICS({ PIXI, INITIAL_VALUES });
+    </script>
+  </body>
+</html>

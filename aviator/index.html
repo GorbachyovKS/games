@@ -1,0 +1,1452 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PLINKO MECHANICS</title>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+
+  <body>
+    <script src="https://pixijs.download/release/pixi.js"></script>
+    <script type="module">
+      const textFitting = async ({ PIXI }) => {
+        // сохраняем оригинальный setter/getter
+        const desc = Object.getOwnPropertyDescriptor(
+          PIXI.Text.prototype,
+          "text"
+        );
+        const origSet = desc?.set;
+        const origGet = desc?.get;
+
+        function refreshText(textObj, currentText) {
+          if (typeof textObj._onStyleChange === "function") {
+            textObj._onStyleChange();
+          } else {
+            textObj._isFitting = true;
+            origSet?.call(textObj, "") ?? (textObj._text = "");
+            origSet?.call(textObj, currentText) ??
+              (textObj._text = currentText);
+            textObj._isFitting = false;
+          }
+        }
+
+        function fitTextToSize(textObj, maxW, maxH, options = {}) {
+          const { minFontSize = 0 } = options;
+          const maxFontSize =
+            options.maxFontSize ??
+            textObj._originalFontSize ??
+            textObj.style.fontSize;
+          const currentText = textObj.text;
+
+          const style = textObj.style;
+          textObj._originalFontSize =
+            textObj._originalFontSize ?? style.fontSize;
+
+          let low = minFontSize,
+            high = maxFontSize,
+            best = minFontSize;
+          while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            style.fontSize = mid;
+
+            // **Ноль перерисовок** — только сбор метрик
+            const metrics = PIXI.CanvasTextMetrics.measureText(
+              currentText,
+              style
+            );
+
+            if (
+              metrics.width <= maxW &&
+              metrics.lines.length * metrics.lineHeight <= maxH
+            ) {
+              best = mid;
+              low = mid + 1;
+            } else {
+              high = mid - 1;
+            }
+          }
+
+          style.fontSize = best;
+          refreshText(textObj, currentText);
+        }
+
+        // Переопределяем setter text
+        Object.defineProperty(PIXI.Text.prototype, "text", {
+          set(value) {
+            if (this._isFitting) {
+              origSet?.call(this, value) ?? (this._text = value);
+              return;
+            }
+            origSet?.call(this, value) ?? (this._text = value);
+
+            // если есть ограничения — запускаем подгонку
+            if ((this.maxWidthForFit || this.maxHeightForFit) && this.style) {
+              this._isFitting = true;
+              fitTextToSize(
+                this,
+                this.maxWidthForFit ?? this.style.wordWrapWidth ?? Infinity,
+                this.maxHeightForFit ?? Infinity,
+                {
+                  minFontSize: this.minFontSizeForFit,
+                  maxFontSize: this.maxFontSizeForFit,
+                }
+              );
+              this._isFitting = false;
+            }
+          },
+          get() {
+            return origGet?.call(this) ?? this._text;
+          },
+          configurable: true,
+          enumerable: true,
+        });
+
+        PIXI.Text.prototype.fitToSize = function () {
+          const trigger = this.text;
+          this.text = trigger;
+        };
+
+        // Фабричная функция для аналогово создания PIXI.Text с подгонкой фитом
+        PIXI.Text.fit = function (content = {}, options = {}) {
+          const { text = "", style = {} } = content;
+          const inst = new PIXI.Text({ text, style });
+          inst.maxWidthForFit = options.maxWidth || Infinity;
+          inst.maxHeightForFit = options.maxHeight || Infinity;
+          if (options.minFontSize) inst.minFontSizeForFit = options.minFontSize;
+          if (options.maxFontSize) inst.maxFontSizeForFit = options.maxFontSize;
+          inst.fitToSize?.();
+          return inst;
+        };
+      };
+
+      textFitting({ PIXI });
+
+      const INITIAL_VALUES = {
+        TEXT: {
+          FONT: {
+            name: "PaytoneOne-Regular",
+            url: "./PaytoneOne-Regular.ttf",
+          },
+          button_play: "Play",
+          button_get: "GET BONUS",
+          popup_title: "Win",
+          popup_description: "1000$",
+          fast_buttons: ["100", "200", "500", "1000"],
+        },
+        ASSETS: {
+          "PaytoneOne-Regular": "./PaytoneOne-Regular.ttf",
+          loadProgressScale: "./loadProgressScale.webp",
+          loadBg: "./loadBg.webp",
+          loadProgressBorder: "./loadProgressBorder.webp",
+          background: "./background.webp",
+
+          popup: "./popup.webp",
+          button: "./button.webp",
+
+          aviator: "./aviator.webp",
+          line: "./line.svg",
+
+          // GAME
+          gameLayout: "./gameLayout.webp",
+          gameBackground: "./gameBackground.webp",
+          gameLogo: "./gameLogo.webp",
+          bulb1: "./bulb1.webp",
+          bulb2: "./bulb2.webp",
+          gameBackgroundGlow: "./gameBackgroundGlow.webp",
+
+          // PANEL
+          panelBetLayout: "./panelBetLayout.webp",
+          panelBetMinus: "./panelBetMinus.webp",
+          panelBetPlus: "./panelBetPlus.webp",
+          panelFastButton: "./panelFastButton.webp",
+          panelLayout: "./panelLayout.webp",
+          panelButton: "./panelButton.webp",
+          panelButtonActive: "./panelButtonActive.webp",
+          plane: "./plane.png",
+          plane_json: "./plane.json",
+        },
+        // null || number
+        // null -> randomMaxCounterX
+        SETTING: { maxCounterX: 20 },
+      };
+
+      const MECHANICS = async ({
+        scene,
+        PIXI,
+        INITIAL_VALUES,
+        MAP = {},
+        PARENT_NODE = document.body,
+      }) => {
+        // ==================================
+        // ======= PARSE PARAMS START =======
+        // ==================================
+        const { ASSETS, TEXT, SETTING } = INITIAL_VALUES;
+        const { FONT = { name: "Arial", url: null } } = TEXT;
+        // загрузка шрифта
+        await loadFont(FONT);
+
+        const deviceResolution = window.devicePixelRatio || 4;
+
+        // ======================================
+        // ======= INITIALIZATION APP START =====
+        // ======================================
+        const app = scene || new PIXI.Application();
+        if (!scene) {
+          await app.init({
+            resizeTo: window,
+            antialias: true,
+            resolution: deviceResolution,
+            autoDensity: true,
+          });
+          globalThis.__PIXI_APP__ = app;
+          document.body.appendChild(app.canvas);
+        }
+
+        // ======================================
+        // ======= RESIZE OBSERVER START =======
+        // ======================================
+        const containersForScale = [];
+        const backgroundsForRatio = [];
+        function handleResize() {
+          if (!app || !app.screen) return;
+
+          const { width: w, height: h } = app.screen;
+          const designWidth = 390;
+          const designHeight = 844;
+
+          const scale = Math.min(w / designWidth, h / designHeight);
+          const shouldScale = w < designWidth || h < designHeight;
+          const finalScale = shouldScale ? scale : 1;
+
+          containersForScale.forEach((container) => {
+            if (container) {
+              container.scale.set(finalScale);
+              setCenterElement(container);
+            }
+          });
+
+          backgroundsForRatio.forEach((asset) => {
+            if (asset) {
+              setAspectRatioElement(asset);
+            }
+          });
+        }
+
+        // Для выставления одиночных pivot, отход от поломки координат
+        const centeredElements = new WeakSet();
+
+        // Centered Elements By App
+        function setCenterElement(element) {
+          if (!centeredElements.has(element)) {
+            const bounds = element.getLocalBounds();
+            element.pivot.set(
+              bounds.x + bounds.width / 2,
+              bounds.y + bounds.height / 2
+            );
+            centeredElements.add(element);
+          }
+          element.position.set(app.screen.width / 2, app.screen.height / 2);
+        }
+
+        // Aspect Ratio Element
+        function setAspectRatioElement(element) {
+          const { width: appWidth, height: appHeight } = app.screen;
+          const aspectRatio = element.width / element.height;
+
+          element.position.set(appWidth / 2, appHeight / 2);
+          element.width = appWidth;
+          element.height = appWidth / aspectRatio;
+          if (appWidth / aspectRatio < appHeight) {
+            element.width = aspectRatio * appHeight;
+            element.height = appHeight;
+          }
+        }
+
+        const resizeObserver = new ResizeObserver(handleResize);
+        resizeObserver.observe(PARENT_NODE);
+
+        // =================================
+        // ======= LOADER VIEW START =======
+        // =================================
+
+        const ASSETS_LOADER = Object.entries(ASSETS)
+          .filter(([key]) => key.includes("load") || key === "logo")
+          .map(([, value]) => value)
+          .filter(Boolean);
+
+        // Загружаем assets для экрана loader
+        await PIXI.Assets.load(ASSETS_LOADER);
+
+        // Главный контейнер loader view
+        // containerLoaderView - Содержит containerLoader(Scale) + backgroundSprite(Ratio)
+        const containerLoaderView = createContainer("containerLoaderView");
+
+        const containerLoader = createContainer("containerLoader");
+
+        const loadBg = createSprite(ASSETS.loadBg, "loadBg");
+        loadBg.anchor.set(0.5);
+
+        const logoLoad = createSprite(
+          ASSETS.logo ?? PIXI.Texture.EMPTY,
+          "logoLoad",
+          {
+            isFrom: !!ASSETS.logo,
+          }
+        );
+        logoLoad.anchor.set(0.5);
+        logoLoad.position.set(0, -70);
+        logoScaleDefaultSize(logoLoad);
+
+        const containerLoadProgress = createContainer("containerLoadProgress");
+        containerLoadProgress.position.set(0, 70);
+
+        const loadProgressBorder = createSprite(
+          ASSETS.loadProgressBorder,
+          "loadProgressBorder"
+        );
+        const loadProgressScale = createSprite(
+          ASSETS.loadProgressScale,
+          "loadProgressScale"
+        );
+
+        loadProgressBorder.anchor.set(0.5);
+        loadProgressScale.x =
+          loadProgressBorder.x - loadProgressBorder.width / 2;
+        loadProgressScale.y =
+          loadProgressBorder.y - loadProgressBorder.height / 2;
+        loadProgressScale.width = 0;
+
+        const mask = new PIXI.Graphics();
+        mask.fill(0xffffff);
+        mask.roundRect(
+          -loadProgressBorder.width / 2 + 1,
+          -loadProgressBorder.height / 2 + 1,
+          loadProgressBorder.width - 2,
+          loadProgressBorder.height - 2,
+          10
+        );
+        mask.fill();
+
+        loadProgressScale.mask = mask;
+        containerLoadProgress.addChild(mask);
+        containerLoadProgress.addChild(loadProgressScale);
+        containerLoadProgress.addChild(loadProgressBorder);
+
+        containerLoader.addChild(logoLoad);
+        containerLoader.addChild(containerLoadProgress);
+
+        containerLoaderView.addChild(loadBg);
+        containerLoaderView.addChild(containerLoader);
+        app.stage.addChild(containerLoaderView);
+
+        setElementsByEvents({ scale: containerLoader, ratio: loadBg });
+
+        async function loadAssets(
+          assets,
+          expendScale,
+          fullWidth,
+          minDuration = 1500
+        ) {
+          return new Promise((resolve) => {
+            const startTime = performance.now();
+            let realProgress = 0;
+            let displayedProgress = 0;
+            let elapsed = 0;
+
+            const ticker = createTicker();
+            ticker.add(() => {
+              elapsed += ticker.elapsedMS;
+
+              const timeProgress = Math.min(elapsed / minDuration, 1);
+              const displayedProgress = Math.min(
+                1,
+                Math.min(realProgress, timeProgress)
+              );
+              expendScale.width = fullWidth * displayedProgress;
+
+              if (realProgress >= 1 && timeProgress >= 1) {
+                elapsed = 0;
+                expendScale.width = fullWidth;
+                ticker.stop();
+                resolve();
+              }
+            });
+
+            ticker.start(); // запуск
+
+            // Начинаем загрузку ассетов
+            // const assetsResolutions = assets.map((src) => {
+            //   return { src, data: { resolution: 4 } };
+            // });
+            // console.log(assetsResolutions);
+            PIXI.Assets.load(assets, (progress) => {
+              realProgress = progress;
+            });
+          });
+        }
+
+        const assets = Object.keys(ASSETS)
+          .map((key) => ASSETS[key])
+          .filter((v) => v);
+
+        await loadAssets(assets, loadProgressScale, loadProgressBorder.width);
+
+        // ==================================
+        // ======== GAME VIEW START  ========
+        // ==================================
+        // Содержит ContainerGame(Scale) + backgroundSprite(Ratio)
+        const containerGameView = createContainer("containerGameView");
+
+        const background = createSprite(ASSETS.background, "background");
+        background.anchor.set(0.5);
+        background.x = app.screen.width / 2;
+        background.y = app.screen.height / 2;
+        const openPopupBlur = new PIXI.BlurFilter(0);
+        openPopupBlur.resolution = deviceResolution;
+        const openPopupBrigthness = new PIXI.ColorMatrixFilter();
+        openPopupBrigthness.resolution = deviceResolution;
+        openPopupBrigthness.brightness(1);
+        background.filters = [openPopupBlur, openPopupBrigthness];
+        containerGameView.addChild(background);
+
+        // containerGame - содержит игру
+        const containerGame = createContainer("containerGame");
+
+        // ========================
+        // ========  LOGO  ========
+        // ========================
+        const containerLogo = createContainer("containerLogo");
+        const logo = createSprite(ASSETS.logo ?? PIXI.Texture.EMPTY, "logo", {
+          isFrom: !!ASSETS.logo,
+        });
+        logoScaleDefaultSize(logo);
+        logo.anchor.set(0.5);
+        containerLogo.addChild(logo);
+        containerLogo.position.set(0, 50); // Размещаем немного выше
+        containerGame.addChild(containerLogo);
+
+        // =======================================
+        // ========  BACKGROUND ELEMENTS  ========
+        // =======================================
+        const containerBgElements = createContainer("containerBgElements");
+
+        const sheet = PIXI.Assets.get("./plane.json");
+
+        const plane = new PIXI.AnimatedSprite(sheet.animations.plane);
+        plane.anchor.set(0.5);
+        plane.animationSpeed = 26 / 60;
+        plane.play();
+
+        containerBgElements.addChild(plane);
+
+        containerGameView.addChild(containerBgElements);
+
+        setElementsByEvents({ scale: containerBgElements });
+
+        plane.position.set(110, -310);
+
+        const planeX1 = -app.screen.width / 2 - plane.width; // стартовая X
+        const planeX2 = app.screen.width + plane.width; // конечная X
+        const planeAmplitude = 30; // амплитуда синусоиды (высота)
+        const planeFrequency = 0.01; // частота волны
+        const planeSpeed = 4; // скорость по X
+
+        // Установка начальной позиции
+        plane.x = planeX1;
+        const planeBaseY = -350; // базовая Y, вокруг которой происходит колебание
+
+        // Время может быть абсолютное значение X (оптимально для плавности)
+        const tickerBgElements = createTicker();
+
+        tickerBgElements.add(() => {
+          plane.x += planeSpeed;
+          plane.y =
+            planeBaseY + Math.sin(plane.x * planeFrequency) * planeAmplitude;
+          if (plane.x + app.screen.width / 2 >= planeX2) {
+            plane.x = planeX1;
+          }
+        });
+        tickerBgElements.start();
+
+        // ==========================
+        // ========  BUTTON  ========
+        // ==========================
+        const containerButton = createContainer("containerButton");
+        const button = createSprite(ASSETS.button, "button");
+        const button_play = PIXI.Text.fit(
+          {
+            text: TEXT.button_play,
+            style: {
+              fontFamily: FONT.name,
+              fill: 0xffffff,
+              fontSize: 40,
+              align: "center",
+              dropShadow: true,
+              dropShadowAngle: 1.56,
+              dropShadowColor: "#8d2488",
+              dropShadowDistance: 2,
+              breakWords: true,
+              wordWrap: true,
+              wordWrapWidth: button.width - 20,
+              letterSpacing: 2,
+            },
+          },
+          { maxHeight: button.height - 20 }
+        );
+
+        const button_get = PIXI.Text.fit(
+          {
+            text: TEXT.button_get,
+            style: {
+              fontFamily: FONT.name,
+              fill: 0xffffff,
+              fontSize: 40,
+              align: "center",
+              dropShadow: true,
+              dropShadowAngle: 1.56,
+              dropShadowDistance: 2,
+              dropShadowColor: "#8d2488",
+              breakWords: true,
+              wordWrap: true,
+              wordWrapWidth: button.width - 20,
+              letterSpacing: 2,
+            },
+          },
+          { maxHeight: button.height - 20 }
+        );
+
+        button.anchor.set(0.5);
+        button.cursor = "pointer";
+        button.interactive = true;
+        button_get.visible = false;
+        button.on("pointerdown", () => {
+          if (!win) {
+            stopButtonAnimation();
+          } else if (win) {
+            if ("openLink" in window) window.openLink();
+            else {
+              win = "";
+              containerButton.visible = false;
+              containerAviator.visible = true;
+              filter.alpha = 0;
+              button_play.visible = true;
+              button_get.visible = false;
+              containerPopup.visible = false;
+              button.interactive = true;
+              containerPopup.scale.set(0);
+              openPopupBlur.blur = 0;
+              openPopupBrigthness.brightness(1, false);
+              containerBgElements.visible = true;
+            }
+          }
+        });
+        button_play.anchor.set(0.5);
+        button_get.anchor.set(0.5);
+
+        containerButton.addChild(button);
+        containerButton.addChild(button_play);
+        containerButton.addChild(button_get);
+        containerButton.position.set(0, 634 / 2); // Размещаем немного ниже
+        containerGame.addChild(containerButton);
+        containerGameView.addChild(containerGame);
+        containerButton.visible = false;
+
+        app.stage.addChild(containerGameView);
+
+        let timeButton = 0;
+        const buttonTicker = createTicker();
+        buttonTicker.add(({ deltaTime }) => {
+          timeButton += deltaTime / 50;
+          containerButton.scale.set(0.9 + Math.sin(timeButton) * 0.05);
+        });
+
+        function startButtonAnimation() {
+          timeButton = 0;
+          buttonTicker.start();
+        }
+
+        function stopButtonAnimation() {
+          buttonTicker.stop();
+        }
+
+        startButtonAnimation();
+
+        setElementsByEvents({ scale: containerGame, ratio: background });
+
+        // ==========================
+        // ========  AVIATOR  =======
+        // ==========================
+
+        const containerAviator = createContainer("containerAviator");
+
+        const containerAviatorGame = createContainer("containerAviatorGame");
+
+        const containerAviatorGameLayout = createContainer(
+          "containerAviatorGameLayout"
+        );
+
+        const gameLayoutSprite = createSprite(ASSETS.gameLayout, "gameLayout");
+        const gameBackgroundSprite = createSprite(
+          ASSETS.gameBackground,
+          "gameBackground"
+        );
+
+        const maskGame = new PIXI.Graphics();
+        maskGame.fill(0xffffff);
+        maskGame
+          .roundRect(
+            -gameLayoutSprite.width / 2,
+            -gameLayoutSprite.height,
+            gameLayoutSprite.width,
+            gameLayoutSprite.height,
+            16
+          )
+          .stroke({ width: 1, color: 0x4d4d4d });
+        maskGame.fill();
+
+        gameLayoutSprite.anchor.set(1, 0);
+        gameLayoutSprite.position.set(
+          gameLayoutSprite.width / 2,
+          -gameLayoutSprite.height
+        );
+
+        gameBackgroundSprite.anchor.set(1, 0);
+        gameBackgroundSprite.position.set(
+          gameLayoutSprite.width / 2,
+          -gameLayoutSprite.height
+        );
+
+        containerAviatorGame.position.set(0, 174);
+
+        const gameLogoSprite = createSprite(ASSETS.gameLogo, "gameLogo");
+        gameLogoSprite.anchor.set(0.5);
+        gameLogoSprite.position.set(0, -gameLayoutSprite.height / 2);
+
+        const gameBackgroundGlow = createSprite(
+          ASSETS.gameBackgroundGlow,
+          "gameBackgroundGlow"
+        );
+        gameBackgroundGlow.anchor.set(0.5);
+        gameBackgroundGlow.position.set(-gameLayoutSprite.width / 2 + 28, -28);
+
+        const aviatorSprite = createSprite(ASSETS.aviator, "aviator");
+        aviatorSprite.anchor.set(0, 1);
+        aviatorSprite.position.set(-gameLayoutSprite.width / 2 + 28, -28);
+        aviatorSprite.visible = false;
+
+        const lineSprite = createSprite(ASSETS.line, "line");
+        lineSprite.anchor.set(0, 1);
+        lineSprite.position.set(-gameLayoutSprite.width / 2 + 28, -28);
+        lineSprite.width = 0;
+        lineSprite.height = 0;
+
+        const textLoseAviator = PIXI.Text.fit({
+          text: "FLEW AWAY",
+          style: {
+            fontSize: 40,
+            fontWeight: 500,
+            align: "center",
+            fill: 0xffffff,
+          },
+        });
+        textLoseAviator.anchor.set(0.5);
+        textLoseAviator.position.set(0, -70 - gameLayoutSprite.height / 2);
+        textLoseAviator.visible = false;
+
+        const counterX = PIXI.Text.fit({
+          text: "0.00x",
+          style: {
+            fontSize: 64,
+            fontWeight: 800,
+            align: "center",
+            fill: 0xffffff,
+            dropShadow: true,
+            dropShadowAngle: 0,
+            dropShadowBlur: 10,
+            dropShadowColor: "#1D7ACA",
+            dropShadowDistance: 0,
+          },
+        });
+        counterX.anchor.set(0.5);
+        counterX.position.set(0, -gameLayoutSprite.height / 2);
+        counterX.visible = false;
+
+        const maskGameLayout = new PIXI.Graphics();
+        maskGameLayout.fill(0xffffff);
+        maskGameLayout
+          .roundRect(
+            -gameLayoutSprite.width / 2 + 28,
+            -gameLayoutSprite.height,
+            gameBackgroundSprite.width,
+            gameBackgroundSprite.height,
+            0
+          )
+          .stroke({ width: 1, color: 0x4d4d4d });
+        maskGameLayout.fill();
+
+        containerAviatorGameLayout.addChild(
+          gameBackgroundSprite,
+          gameLogoSprite,
+          gameBackgroundGlow,
+          aviatorSprite,
+          lineSprite,
+          counterX,
+          textLoseAviator,
+          maskGameLayout
+        );
+
+        containerAviatorGameLayout.mask = maskGameLayout;
+
+        containerAviatorGame.addChild(
+          gameLayoutSprite,
+          containerAviatorGameLayout,
+          maskGame
+        );
+
+        containerAviatorGame.mask = maskGame;
+
+        // VERTICAL BULB
+        const containerVerticalBulb = createContainer(
+          "containerHorizontalBulb"
+        );
+
+        for (let i = 0; i < 10; i++) {
+          const bulb = createSprite(ASSETS.bulb1, "bulb1");
+          bulb.position.set(
+            -gameLayoutSprite.width / 2 + 7,
+            -48 - i * (bulb.height + 37)
+          );
+
+          const brightness = new PIXI.ColorMatrixFilter();
+          brightness.resolution = deviceResolution;
+          brightness.brightness(1);
+
+          bulb.filters = [brightness];
+
+          containerVerticalBulb.addChild(bulb);
+        }
+        containerAviatorGame.addChild(containerVerticalBulb);
+
+        // HORIZONTAL BULB
+        const containerHorizontalBulb = createContainer(
+          "containerHorizontalBulb"
+        );
+        for (let i = 0; i < 7; i++) {
+          const bulb = createSprite(ASSETS.bulb2, "bulb2");
+          bulb.position.set(
+            -gameLayoutSprite.width / 2 + 49 + i * (40 + bulb.width),
+            -20
+          );
+
+          const brightness = new PIXI.ColorMatrixFilter();
+          brightness.resolution = deviceResolution;
+          brightness.brightness(1);
+
+          bulb.filters = [brightness];
+          containerHorizontalBulb.addChild(bulb);
+        }
+        containerAviatorGame.addChild(containerHorizontalBulb);
+
+        const tickerBulbPending = createTicker();
+        let inversePending = 0;
+        let lastRun = -Infinity;
+
+        tickerBulbPending.add(() => {
+          const now = performance.now();
+          if (now - lastRun >= 800) {
+            const verticalBulbs = containerVerticalBulb.children;
+            const horizontalBulbs = containerHorizontalBulb.children;
+
+            [...horizontalBulbs, ...verticalBulbs].forEach((bulb) => {
+              const [filter] = bulb.filters;
+              bulb._isBright = !bulb._isBright;
+              filter.brightness(bulb._isBright ? 1 : 0);
+            });
+
+            lastRun = now;
+          }
+        });
+
+        tickerBulbPending.start();
+
+        const tickerBulbPlay = createTicker();
+        const BULB_PLAY_GAP = 50;
+        tickerBulbPlay.add(() => {
+          const verticalBulbs = containerVerticalBulb.children;
+          const horizontalBulbs = containerHorizontalBulb.children;
+          const maxLength = Math.max(
+            verticalBulbs.length,
+            horizontalBulbs.length
+          );
+          const now = performance.now();
+          if (now - lastRun >= maxLength * BULB_PLAY_GAP) {
+            horizontalBulbs.forEach((bulb, index) => {
+              setTimeout(() => {
+                const [filter] = bulb.filters;
+                bulb._isBright = !bulb._isBright;
+                filter.brightness(bulb._isBright ? 1 : 0);
+              }, BULB_PLAY_GAP * index);
+            });
+            verticalBulbs.forEach((bulb, index) => {
+              setTimeout(() => {
+                const [filter] = bulb.filters;
+                bulb._isBright = !bulb._isBright;
+                filter.brightness(bulb._isBright ? 1 : 0);
+              }, BULB_PLAY_GAP * index);
+            });
+
+            lastRun = now;
+          }
+        });
+
+        function resetBulbsFilters() {
+          const verticalBulbs = containerVerticalBulb.children;
+          const horizontalBulbs = containerHorizontalBulb.children;
+          [...verticalBulbs, ...horizontalBulbs].forEach((bulb) => {
+            const [filter] = bulb.filters;
+            filter.reset();
+          });
+        }
+
+        function pendingToPlay() {
+          tickerBulbPending.stop();
+          resetBulbsFilters();
+          tickerBulbPlay.start();
+        }
+
+        function playToPending() {
+          tickerBulbPlay.stop();
+          resetBulbsFilters();
+          tickerBulbPending.start();
+        }
+
+        function textColorWin() {
+          counterX.style.fill = 0xe40639;
+          counterX.style.dropShadow = false;
+          counterX.style.stroke = { color: "#000000", width: 1 };
+        }
+        function textColorDefault() {
+          counterX.style.fill = 0xffffff;
+          counterX.style.dropShadow = true;
+          counterX.style.stroke = { color: "#000000", width: 0 };
+        }
+
+        let randomMaxCounterX = getRandomInt(1, 20);
+
+        const tickerAviatorGame = createTicker();
+        let isReverseUp = false;
+        tickerAviatorGame.add(({ deltaTime }) => {
+          if (
+            parseFloat(counterX.text) <=
+            (SETTING.maxCounterX || randomMaxCounterX)
+          ) {
+            gameBackgroundGlow.rotation = gameBackgroundGlow.rotation + 0.0025;
+
+            let float = parseFloat(counterX.text);
+            float += Math.random() * 0.1;
+            float = float.toFixed(2);
+            counterX.text = `${float}x`;
+
+            const panelBetTextFloat = parseFloat(panelBetText.text);
+            const result = float * panelBetTextFloat;
+            panelButtonText.text = `Cash out \n ${result.toFixed(2)} INR`;
+
+            if (lineSprite.width <= gameLayoutSprite.width * 0.75) {
+              aviatorSprite.position.x += 1;
+            }
+
+            if (
+              aviatorSprite.y >= -gameLayoutSprite.height * 0.45 &&
+              !isReverseUp
+            ) {
+              aviatorSprite.y -= Math.sin(deltaTime) * 2;
+            } else {
+              isReverseUp = true;
+              aviatorSprite.y += Math.sin(deltaTime) * 2;
+              if (
+                isReverseUp &&
+                aviatorSprite.y >= -gameLayoutSprite.height * 0.15
+              ) {
+                isReverseUp = false;
+              }
+            }
+            const originalLineWidth = lineSprite.texture.width;
+            const originalLineHeight = lineSprite.texture.height;
+
+            const targetWidth = aviatorSprite.x + 155.5 + aviatorSprite.width;
+            const targetHeight = aviatorSprite.y + 28;
+
+            lineSprite.scale.set(
+              targetWidth / originalLineWidth,
+              -(targetHeight / originalLineHeight)
+            );
+          } else {
+            gameLose = true;
+            aviatorSprite.position.set(
+              aviatorSprite.x + 12,
+              aviatorSprite.y - 12
+            );
+
+            textLoseAviator.visible = true;
+
+            panelButtonSprite.texture = panelButtonTexture;
+            const float = parseFloat(panelBetText.text);
+            const result = String(Math.round(float).toFixed(2));
+            panelBetText.text = result;
+            panelButtonText.text = `Bet \n${result} INR`;
+
+            if (aviatorSprite.x >= gameLayoutSprite.width) {
+              tickerAviatorGame.stop();
+              setTimeout(() => stopPlayAviator(false), 1000);
+            }
+            textColorWin();
+          }
+        });
+
+        function startPlayAviator() {
+          randomMaxCounterX = getRandomInt(0, 20);
+          game = true;
+          textLoseAviator.visible = false;
+          pendingToPlay();
+          textColorDefault();
+          counterX.text = "0.00x";
+          counterX.visible = true;
+          gameLogoSprite.visible = false;
+          aviatorSprite.visible = true;
+          panelButtonSprite.texture = panelButtonActiveTexture;
+          tickerAviatorGame.start();
+        }
+        function stopPlayAviator(isWin) {
+          textLoseAviator.visible = false;
+          aviatorSprite.position.set(lineSprite.x, lineSprite.y);
+          panelButtonSprite.texture = panelButtonTexture;
+          const float = parseFloat(panelBetText.text);
+          const result = String(Math.round(float).toFixed(2));
+          panelBetText.text = result;
+          panelButtonText.text = `Bet \n${result} INR`;
+          counterX.visible = false;
+          gameLogoSprite.visible = true;
+          aviatorSprite.visible = false;
+
+          gameLose = false;
+          game = false;
+          win = isWin;
+          if (isWin) {
+            const panelBetTextFloat = parseFloat(panelBetText.text);
+            const counterXFloat = parseFloat(counterX.text);
+
+            containerAviator.visible = false;
+            text_description_popup.text = `${(
+              panelBetTextFloat * counterXFloat
+            ).toFixed(2)}$`;
+          } else {
+            text_description_popup.text = "";
+          }
+          lineSprite.scale.set(0);
+          tickerAviatorGame.stop();
+          playToPending();
+          startPopup();
+        }
+
+        // ===================
+        // *AVIATOR* PANEL
+        // ===================
+        const containerAviatorPanel = createContainer("containerAviatorPanel");
+
+        const PANEL_PADDING = 8;
+        const PANEL_BET_PADDING = 6;
+        const panelLayoutSprite = createSprite(
+          ASSETS.panelLayout,
+          "panelLayout"
+        );
+        panelLayoutSprite.anchor.set(0.5);
+        containerAviatorPanel.addChild(panelLayoutSprite);
+
+        // ===================
+        // *AVIATOR* PANEL BET
+        // ===================
+        const containerAviatorPanelBet = createContainer(
+          "containerAviatorPanelBet"
+        );
+
+        const panelBetLayoutSprite = createSprite(
+          ASSETS.panelBetLayout,
+          "panelBetLayout"
+        );
+        containerAviatorPanelBet.position.set(
+          -panelLayoutSprite.width / 2 + PANEL_PADDING,
+          -panelLayoutSprite.height / 2 + PANEL_PADDING
+        );
+
+        const panelBetText = PIXI.Text.fit(
+          {
+            text: "10.00",
+            style: { fill: 0xffffff, fontSize: 16, fontWeight: 700 },
+          },
+          { maxWidth: 80 }
+        );
+        panelBetText.label = "panelBetText";
+        panelBetText.anchor.set(0.5);
+        panelBetText.position.set(
+          panelBetLayoutSprite.width / 2,
+          panelBetLayoutSprite.height / 2
+        );
+
+        const panelBetMinusSprite = createSprite(
+          ASSETS.panelBetMinus,
+          "panelBetMinus"
+        );
+        panelBetMinusSprite.position.set(
+          panelBetLayoutSprite.x + PANEL_BET_PADDING,
+          panelBetLayoutSprite.y + PANEL_BET_PADDING
+        );
+        panelBetMinusSprite.interactive = true;
+        panelBetMinusSprite.cursor = "pointer";
+        panelBetMinusSprite.on("pointerdown", () => patchBet(-1));
+
+        const controller = new AbortController();
+        const { signal } = controller;
+
+        window.addEventListener(
+          "keydown",
+          (event) => {
+            const { key } = event;
+
+            if (!app || !app.stage) {
+              controller.abort(); // автоматически удалит обработчик
+              return;
+            }
+
+            switch (key) {
+              case "ArrowUp":
+                patchBet(1);
+                break;
+              case "ArrowDown":
+                patchBet(-1);
+                break;
+            }
+          },
+          { signal }
+        );
+
+        const panelBetPlusSprite = createSprite(
+          ASSETS.panelBetPlus,
+          "panelBetPlus"
+        );
+        panelBetPlusSprite.position.set(
+          panelBetLayoutSprite.x +
+            panelBetLayoutSprite.width -
+            panelBetPlusSprite.width -
+            PANEL_BET_PADDING,
+          panelBetLayoutSprite.y + PANEL_BET_PADDING
+        );
+        panelBetPlusSprite.interactive = true;
+        panelBetPlusSprite.cursor = "pointer";
+        panelBetPlusSprite.on("pointerdown", () => patchBet(1));
+
+        containerAviatorPanelBet.addChild(
+          panelBetLayoutSprite,
+          panelBetText,
+          panelBetMinusSprite,
+          panelBetPlusSprite
+        );
+
+        // ===================
+        // *AVIATOR* BUTTON
+        // ===================
+        const containerAviatorPanelButton = createContainer(
+          "containerAviatorPanelButton"
+        );
+
+        const panelButtonTexture = createTexture(
+          ASSETS.panelButton,
+          "panelButton"
+        );
+        const panelButtonActiveTexture = createTexture(
+          ASSETS.panelButtonActive,
+          "panelButtonActive"
+        );
+        const panelButtonSprite = createSprite(
+          panelButtonTexture,
+          "panelButtonSprite"
+        );
+        const panelButtonText = PIXI.Text.fit(
+          {
+            text: "Bet \n10.00 INR",
+            style: {
+              fill: 0xffffff,
+              fontSize: 22,
+              fontWeight: 500,
+              align: "center",
+            },
+          },
+          {
+            maxWidth: panelButtonSprite.width - 20,
+            maxHeight: panelButtonSprite.height - 20,
+          }
+        );
+        panelButtonText.label = "panelButtonText";
+        panelButtonText.anchor.set(0.5);
+        panelButtonText.position.set(
+          panelButtonSprite.width / 2,
+          panelButtonSprite.height / 2
+        );
+        containerAviatorPanelButton.position.set(
+          panelLayoutSprite.width / 2 - panelButtonSprite.width - PANEL_PADDING,
+          panelLayoutSprite.height / 2 -
+            panelButtonSprite.height -
+            PANEL_PADDING
+        );
+
+        containerAviatorPanelButton.interactive = true;
+        containerAviatorPanelButton.cursor = "pointer";
+        let game = false;
+        let gameLose = false;
+        containerAviatorPanelButton.on("pointerdown", () => {
+          // START PLAY
+          if (!game && !gameLose) {
+            startPlayAviator();
+          } else if (game && !gameLose) {
+            stopPlayAviator(true);
+          }
+        });
+
+        containerAviatorPanelButton.addChild(
+          panelButtonSprite,
+          panelButtonText
+        );
+
+        // ===================
+        // *AVIATOR* FAST BUTTON
+        // ===================
+        const containerAviatorPanelFastButton = createContainer(
+          "containerAviatorPanelFastButton"
+        );
+
+        const ftbns = [
+          { x: -134.5, y: 0 },
+          { x: -45.5, y: 0 },
+          { x: -134.5, y: 50 },
+          { x: -45.5, y: 50 },
+        ];
+        for (let i = 0; i < 4; i++) {
+          const fbtn = ftbns[i];
+          const fbtnContainer = createContainer(`fbtnContainer${i}`);
+
+          const panelFastButtonSprite = createSprite(
+            ASSETS.panelFastButton,
+            "panelFastButton"
+          );
+          panelFastButtonSprite.anchor.set(0.5);
+
+          const fbtnText = PIXI.Text.fit({
+            text: TEXT.fast_buttons[i],
+            style: { fill: 0x8c8c8c, fontSize: 15 },
+          });
+          fbtnText.label = "fbtnText";
+          fbtnText.anchor.set(0.5);
+
+          fbtnContainer.addChild(panelFastButtonSprite, fbtnText);
+          fbtnContainer.interactive = true;
+          fbtnContainer.cursor = "pointer";
+          fbtnContainer.on("pointerdown", () => patchBet(fbtnText.text));
+          const { x, y } = fbtn;
+          fbtnContainer.position.set(x, y);
+          containerAviatorPanelFastButton.addChild(fbtnContainer);
+        }
+
+        function patchBet(value) {
+          if (game) return;
+          const float = parseFloat(panelBetText.text);
+          const plusFloat = parseFloat(value);
+
+          const result = String(Math.round(float + plusFloat).toFixed(2));
+          panelBetText.text = result;
+          panelButtonText.text = `Bet \n${result} INR`;
+        }
+
+        containerAviatorPanel.addChild(
+          containerAviatorPanelBet,
+          containerAviatorPanelButton,
+          containerAviatorPanelFastButton
+        );
+
+        containerAviatorPanel.position.set(
+          0,
+          containerAviatorGame.height - 225
+        );
+
+        containerAviator.addChild(containerAviatorGame);
+        containerAviator.addChild(containerAviatorPanel);
+
+        containerAviator.position.set(0, 97);
+        containerGame.addChild(containerAviator);
+
+        // =========================
+        // ========  POPUP  ========
+        // =========================
+        let win = null;
+        const containerPopup = createContainer("containerPopup");
+        const popup = createSprite(ASSETS.popup, "popup");
+        const text_popup = PIXI.Text.fit(
+          {
+            text: TEXT.popup_title,
+            style: {
+              fontFamily: FONT.name,
+              fill: 0xffffff,
+              fontSize: 40,
+              align: "center",
+              breakWords: true,
+              wordWrap: true,
+              wordWrapWidth: popup.width - 20,
+            },
+          },
+          { maxHeight: popup.height / 3 }
+        );
+
+        const text_description_popup = PIXI.Text.fit(
+          {
+            text: TEXT.popup_description,
+            style: {
+              fontFamily: FONT.name,
+              fill: 0xffffff,
+              fontSize: 30,
+              breakWords: true,
+              wordWrap: true,
+              wordWrapWidth: popup.width - 20,
+              align: "center",
+            },
+          },
+          { maxHeight: popup.height / 2 - 20 }
+        );
+
+        popup.anchor.set(0.5);
+        text_popup.anchor.set(0.5, 0);
+        text_description_popup.anchor.set(0.5, 0);
+        containerPopup.position.set(0, containerGame.height);
+        text_popup.y = -160;
+
+        const filter = new PIXI.AlphaFilter(1);
+        filter.resolution = deviceResolution;
+        containerPopup.filters = [filter];
+        filter.alpha = 0; // <-- tween this property
+        containerPopup.addChild(popup);
+        containerPopup.addChild(text_popup);
+        containerPopup.addChild(text_description_popup);
+        containerPopup.visible = false;
+        containerPopup.scale.set(0);
+        containerPopup.y = 0;
+        containerGame.addChild(containerPopup);
+
+        // ===================================
+        // ========  POPUP FUNCTIONS  ========
+        // ===================================
+
+        //стандартное появление попапа
+        function defaultPopupFunction(time) {
+          // Показываем попап и нужные кнопки
+          containerPopup.visible = true;
+
+          // Плавно увеличиваем прозрачность фильтра попапа
+          if (filter.alpha < 1) {
+            filter.alpha += 0.05;
+          }
+
+          // увеличиваем блюр
+          if (openPopupBlur.blur < 8) {
+            openPopupBlur.blur += 0.5;
+          }
+
+          bounceScale(containerPopup, time);
+
+          // увеличиваем затемнение
+          if (currentBrigthness > 0.5) {
+            currentBrigthness -= 0.05;
+            openPopupBrigthness.brightness(currentBrigthness, false);
+          }
+
+          if (
+            containerPopup.alpha >= 1 &&
+            filter.alpha >= 1 &&
+            elapsedPopup >= TOTAL_DURATION_POPUP
+          ) {
+            stopPopup();
+          }
+        }
+
+        //функция для управления не стандартными элементами
+        function customPopupFunction() {
+          containerBgElements.visible = false;
+          containerButton.visible = true;
+          button.interactive = true;
+          button_get.visible = true;
+          button_play.visible = false;
+        }
+
+        function startPopup() {
+          elapsedPopup = 0;
+          containerPopup.scale.set(0.7);
+          tickerPopup.start();
+        }
+
+        function stopPopup() {
+          tickerPopup.stop();
+        }
+
+        let currentBrigthness = 1;
+        let elapsedPopup = 0;
+        const START_SCALE_POPUP = 0.65;
+        const PEAK_SCALE_POPUP = 1.15;
+        const END_SCALE_POPUP = 1.0;
+        const TOTAL_DURATION_POPUP = 0.7; // в секундах
+        // Ticker Popup upper
+        // Reusable
+        const tickerPopup = createTicker();
+        tickerPopup.add((time) => {
+          if (!win) return;
+          defaultPopupFunction(time);
+          customPopupFunction(time);
+        });
+
+        function bounceScale(sprite, delta) {
+          elapsedPopup += delta.deltaTime / 110; // переводим delta в секунды
+          const t = Math.min(elapsedPopup / TOTAL_DURATION_POPUP, 1); // нормализованное время [0..1]
+
+          let scale;
+          if (t < 0.6) {
+            const localT = t / 0.6;
+            scale = lerp(
+              START_SCALE_POPUP,
+              PEAK_SCALE_POPUP,
+              easeOutCubic(localT)
+            );
+          } else {
+            const localT = (t - 0.6) / 0.4;
+            scale = lerp(
+              PEAK_SCALE_POPUP,
+              END_SCALE_POPUP,
+              easeOutBounce(localT)
+            );
+          }
+          sprite.scale.set(scale);
+        }
+
+        // Линейная интерполяция
+        function lerp(a, b, t) {
+          return a + (b - a) * t;
+        }
+
+        // Ускоренный выход (для первой части)
+        function easeOutCubic(t) {
+          return 1 - Math.pow(1 - t, 3);
+        }
+
+        // Простейший bounce эффект
+        function easeOutBounce(t) {
+          const n1 = 7.5625;
+          const d1 = 2.75;
+
+          if (t < 1 / d1) {
+            return n1 * t * t;
+          } else if (t < 2 / d1) {
+            return n1 * (t -= 1.5 / d1) * t + 0.75;
+          } else if (t < 2.5 / d1) {
+            return n1 * (t -= 2.25 / d1) * t + 0.9375;
+          } else {
+            return n1 * (t -= 2.625 / d1) * t + 0.984375;
+          }
+        }
+
+        function getRandomInt(min, max) {
+          const minCeiled = Math.ceil(min);
+          const maxFloored = Math.floor(max);
+          return Math.random() * (maxFloored - minCeiled) + minCeiled; // The maximum is exclusive and the minimum is inclusive
+        }
+
+        // =======================================
+        // ========  LOGIC AND FUNCTIONS  ========
+        // =======================================
+
+        async function loadFont({ name, url }) {
+          if (!url) {
+            const link = document.createElement("link");
+            link.rel = "stylesheet";
+            link.href = `https://fonts.googleapis.com/css2?family=${name.replace(
+              / /g,
+              "+"
+            )}&display=swap`;
+            document.head.appendChild(link);
+          } else {
+            const font = new FontFace(name, `url(${url})`);
+            await font.load();
+            document.fonts.add(font);
+          }
+          const check = document.fonts.check(`12px "${name}"`);
+          if (!check) {
+            await document.fonts.load(`12px "${name}"`);
+          }
+        }
+
+        function createTicker() {
+          const ticker = new PIXI.Ticker();
+          ticker.add(() => {
+            if (!app.stage) {
+              ticker.stop();
+              ticker.destroy();
+            }
+          });
+          return ticker;
+        }
+
+        function createContainer(name = "") {
+          const container = new PIXI.Container();
+          container.label = name;
+          return container;
+        }
+
+        function createSprite(asset, name, { isFrom = true } = {}) {
+          const sprite = isFrom
+            ? PIXI.Sprite.from(asset)
+            : new PIXI.Sprite(asset);
+          sprite.label = name;
+          return sprite;
+        }
+
+        function createTexture(asset, name = "") {
+          const texture = PIXI.Texture.from(asset);
+          texture.label = name;
+          return texture;
+        }
+
+        function logoScaleDefaultSize(element) {
+          if (element.scale && element.texture) {
+            const DEFAULT_LOGO_SIZE = { width: 199, height: 104 };
+            const scaleX = DEFAULT_LOGO_SIZE.width / element.texture.width;
+            const scaleY = DEFAULT_LOGO_SIZE.height / element.texture.height;
+            const scaleMin = Math.min(scaleX, scaleY); // выбрать наименьший масштаб, чтобы вписаться
+            element.scale.set(scaleMin);
+          }
+        }
+
+        function setElementsByEvents({ scale, ratio }) {
+          if (scale) containersForScale.push(scale);
+          if (ratio) backgroundsForRatio.push(ratio);
+          handleResize();
+        }
+      };
+
+      MECHANICS({ PIXI, INITIAL_VALUES });
+    </script>
+  </body>
+</html>

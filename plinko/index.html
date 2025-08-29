@@ -1,0 +1,941 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Plinko</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Righteous&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+
+  <body>
+    <script src="https://pixijs.download/release/pixi.js"></script>
+    <script type="module">
+      const INITIAL_VALUES = {
+        ASSETS: {
+          background: "./background.webp",
+          logo: "./logo.jpeg",
+          button: "./button.webp",
+          popup: "./popup.webp",
+          basket: "./basket.webp",
+          point_path: "./point_path.webp",
+          point_start: "./point_start.webp",
+          path_light: "./path_light.webp",
+          ball: "./ball.webp",
+          bg_effect: "./bg_effect.webp",
+          bg_element1: "./bg_element1.webp",
+          bg_element2: "./bg_element2.webp",
+          bg_element3: "./bg_element3.webp",
+          loadBg: "./loadBg.webp",
+          loadProgressBorder: "./loadProgressBorder.webp",
+          loadProgressScale: "./loadProgressScale.webp",
+          spark1: "./spark1.png",
+          spark2: "./spark2.png",
+          spark3: "./spark3.png",
+          spark4: "./spark4.png",
+          spark5: "./spark5.png",
+          spark6: "./spark6.png",
+          spark7: "./spark7.png",
+          spark8: "./spark8.png",
+          spark9: "./spark9.png",
+          spark10: "./spark10.png",
+          spark11: "./spark11.png",
+        },
+        TEXT: {
+          FONT: {
+            name: "Sansita",
+          },
+          button_play: "PLAY",
+          button_get: "GET",
+          popup_title: "Rewards!",
+          popup_description: "Rewards description!",
+        },
+        SETTING: {
+          plinko_rows: 4,
+          start_points: 3,
+          ball_count: 10,
+        },
+      };
+      export const PLINKO_MECHANICS = async ({
+        scene,
+        PIXI,
+        INITIAL_VALUES,
+        MAP = {},
+        PARENT_NODE = document.body,
+      }) => {
+        // ==================================
+        // ======= PARSE PARAMS START =======
+        // ==================================
+        const { ASSETS, TEXT, SETTING } = INITIAL_VALUES;
+        const { FONT = { name: "Arial", url: null } } = TEXT;
+        // загрузка шрифта
+        await loadFont(FONT);
+
+        // ======================================
+        // ======= INITIALIZATION APP START =====
+        // ======================================
+        const app = scene || new PIXI.Application();
+        if (!scene) {
+          await app.init({
+            resizeTo: window,
+            antialias: true,
+          });
+          document.body.appendChild(app.canvas);
+        }
+        globalThis.__PIXI_APP__ = app;
+        // ======================================
+        // ======= RESIZE OBSERVER START =======
+        // ======================================
+        const containersForScale = [];
+        const backgroundsForRatio = [];
+        function handleResize() {
+          if (!app) return;
+
+          const { width: w, height: h } = app.screen;
+          const designWidth = 390;
+          const designHeight = 844;
+
+          const scale = Math.min(w / designWidth, h / designHeight);
+          const shouldScale = w < designWidth || h < designHeight;
+          const finalScale = shouldScale ? scale : 1;
+
+          containersForScale.forEach((container) => {
+            if (container) {
+              container.scale.set(finalScale);
+              setCenterElement(container);
+            }
+          });
+
+          backgroundsForRatio.forEach((asset) => {
+            if (asset) {
+              setAspectRatioElement(asset);
+            }
+          });
+        }
+
+        // Хранилище уже центрированных элементов
+        const centeredElements = new WeakSet();
+
+        // Centered Elements By App
+        function setCenterElement(element) {
+          if (!centeredElements.has(element)) {
+            // Устанавливаем pivot только один раз
+            const bounds = element.getLocalBounds();
+            element.pivot.set(
+              bounds.x + bounds.width / 2,
+              bounds.y + bounds.height / 2
+            );
+            centeredElements.add(element); // помечаем как обработанный
+          }
+
+          // Обновляем позицию каждый раз
+          element.position.set(app.screen.width / 2, app.screen.height / 2);
+        }
+
+        // Aspect Ratio Element
+        function setAspectRatioElement(element) {
+          const { width: appWidth, height: appHeight } = app.screen;
+          const aspectRatio = element.width / element.height;
+
+          element.position.set(appWidth / 2, appHeight / 2);
+          element.width = appWidth;
+          element.height = appWidth / aspectRatio;
+          if (appWidth / aspectRatio < appHeight) {
+            element.width = aspectRatio * appHeight;
+            element.height = appHeight;
+          }
+        }
+
+        const resizeObserver = new ResizeObserver(handleResize);
+        resizeObserver.observe(PARENT_NODE);
+
+        // =================================
+        // ======= LOADER VIEW START =======
+        // =================================
+
+        const ASSETS_LOADER = Object.entries(ASSETS)
+          .filter(([key]) => key.includes("load"))
+          .map(([, value]) => value)
+          .filter(Boolean);
+
+        // Загружаем assets для экрана loader
+        await PIXI.Assets.load(ASSETS_LOADER);
+
+        // Главный контейнер loader view
+        // containerLoaderView - Содержит containerLoader(Scale) + backgroundSprite(Ratio)
+        const containerLoaderView = createContainer("containerLoaderView");
+
+        const containerLoader = createContainer("containerLoader");
+
+        const loadBg = createSprite(ASSETS.loadBg, "loadBg");
+        loadBg.anchor.set(0.5);
+
+        const logoLoad = createSprite(
+          ASSETS.logo ?? PIXI.Texture.EMPTY,
+          "logoLoad",
+          {
+            isFrom: !!ASSETS.logo,
+          }
+        );
+        logoLoad.anchor.set(0.5);
+        logoLoad.position.set(0, -70);
+        logoScaleDefaultSize(logoLoad);
+
+        const containerLoadProgress = createContainer("containerLoadProgress");
+        containerLoadProgress.position.set(0, 70);
+
+        const loadProgressBorder = createSprite(
+          ASSETS.loadProgressBorder,
+          "loadProgressBorder"
+        );
+        const loadProgressScale = createSprite(
+          ASSETS.loadProgressScale,
+          "loadProgressScale"
+        );
+
+        loadProgressBorder.anchor.set(0.5);
+        loadProgressScale.x =
+          loadProgressBorder.x - loadProgressBorder.width / 2;
+        loadProgressScale.y =
+          loadProgressBorder.y - loadProgressBorder.height / 2;
+        loadProgressScale.width = 0;
+
+        const mask = new PIXI.Graphics();
+        mask.fill(0xffffff);
+        mask.roundRect(
+          -loadProgressBorder.width / 2 + 1,
+          -loadProgressBorder.height / 2 + 1,
+          loadProgressBorder.width - 2,
+          loadProgressBorder.height - 2,
+          10
+        );
+        mask.fill();
+
+        loadProgressScale.mask = mask;
+        containerLoadProgress.addChild(mask);
+        containerLoadProgress.addChild(loadProgressScale);
+        containerLoadProgress.addChild(loadProgressBorder);
+
+        containerLoader.addChild(logoLoad);
+        containerLoader.addChild(containerLoadProgress);
+
+        containerLoaderView.addChild(loadBg);
+        containerLoaderView.addChild(containerLoader);
+        app.stage.addChild(containerLoaderView);
+
+        setElementsByEvents({ scale: containerLoader, ratio: loadBg });
+
+        async function loadAssets(
+          assets,
+          expendScale,
+          fullWidth,
+          minDuration = 1500
+        ) {
+          return new Promise((resolve) => {
+            const startTime = performance.now();
+            let realProgress = 0;
+            let displayedProgress = 0;
+            let elapsed = 0;
+
+            const ticker = createTicker();
+            ticker.add(() => {
+              elapsed += ticker.elapsedMS;
+
+              const timeProgress = Math.min(elapsed / minDuration, 1);
+              const displayedProgress = Math.min(
+                1,
+                Math.min(realProgress, timeProgress)
+              );
+              expendScale.width = fullWidth * displayedProgress;
+
+              if (realProgress >= 1 && timeProgress >= 1) {
+                elapsed = 0;
+                expendScale.width = fullWidth;
+                ticker.stop();
+                resolve();
+              }
+            });
+
+            ticker.start(); // запуск
+
+            // Начинаем загрузку ассетов
+            PIXI.Assets.load(assets, (progress) => {
+              realProgress = progress;
+            });
+          });
+        }
+
+        const assets = Object.keys(ASSETS)
+          .map((key) => ASSETS[key])
+          .filter((v) => v);
+
+        await loadAssets(assets, loadProgressScale, loadProgressBorder.width);
+
+        // ==================================
+        // ======== GAME VIEW START  ========
+        // ==================================
+        // Содержит ContainerGame(Scale) + backgroundSprite(Ratio)
+        const containerGameView = createContainer("containerGameView");
+
+        const background = createSprite(ASSETS.background, "background");
+        background.anchor.set(0.5);
+        background.x = app.screen.width / 2;
+        background.y = app.screen.height / 2;
+        containerGameView.addChild(background);
+
+        // containerGame - содержит игру
+        const containerGame = createContainer("containerGame");
+
+        // ========================
+        // ========  LOGO  ========
+        // ========================
+        const containerLogo = createContainer("containerLogo");
+        const logo = createSprite(ASSETS.logo ?? PIXI.Texture.EMPTY, "logo", {
+          isFrom: !!ASSETS.logo,
+        });
+        logoScaleDefaultSize(logo);
+        logo.anchor.set(0.5);
+        containerLogo.addChild(logo);
+        containerLogo.position.set(0, 50); // Размещаем немного выше
+        containerGame.addChild(containerLogo);
+
+        // =======================================
+        // ========  BACKGROUND ELEMENTS  ========
+        // =======================================
+        const containerBgElements = createContainer("containerBgElements");
+        const bg_effect = createSprite(ASSETS.bg_effect, "bg_effect");
+        const bg_element1 = createSprite(ASSETS.bg_element1, "bg_element1");
+        const bg_element2 = createSprite(ASSETS.bg_element2, "bg_element2");
+        const bg_element3 = createSprite(ASSETS.bg_element3, "bg_element3");
+
+        bg_effect.anchor.set(0.5);
+        bg_element1.anchor.set(0.5);
+        bg_element2.anchor.set(0.5);
+        bg_element3.anchor.set(0.5);
+
+        containerBgElements.addChild(bg_effect);
+        containerBgElements.addChild(bg_element1);
+        containerBgElements.addChild(bg_element2);
+        containerBgElements.addChild(bg_element3);
+
+        containerGameView.addChild(containerBgElements);
+
+        setElementsByEvents({ scale: containerBgElements });
+
+        bg_effect.position.set(0, -222);
+        bg_element1.position.set(40, 355);
+        bg_element2.position.set(-210, -270);
+        bg_element3.position.set(155, -235);
+
+        let time = 0;
+        let timeElement3 = 0;
+        const minMaxScaleOffset = 0.1;
+
+        app.ticker.add(({ deltaTime }) => {
+          time += deltaTime / 100;
+          timeElement3 += deltaTime / 50;
+          bg_element1.scale.set(1 + Math.sin(time) * minMaxScaleOffset);
+          bg_element2.scale.set(1 + Math.sin(time) * minMaxScaleOffset);
+          bg_element3.rotation = Math.sin(timeElement3);
+          bg_effect.scale.set(1 + Math.sin(time) * minMaxScaleOffset);
+        });
+        // ==========================
+        // ========  BUTTON  ========
+        // ==========================
+        const containerButton = createContainer("containerButton");
+        const button = createSprite(ASSETS.button, "button");
+        const button_play = new PIXI.Text({
+          text: TEXT.button_play,
+          style: {
+            fontFamily: FONT.name,
+            fill: 0xffffff,
+            fontSize: 40,
+            align: "center",
+            dropShadow: true,
+            dropShadowAngle: 1.56,
+            dropShadowColor: "#8d2488",
+            dropShadowDistance: 2,
+            breakWords: true,
+            wordWrap: true,
+            wordWrapWidth: button.width - 20,
+            letterSpacing: 2,
+          },
+        });
+        const button_get = new PIXI.Text({
+          text: TEXT.button_get,
+          style: {
+            fontFamily: FONT.name,
+            fill: 0xffffff,
+            fontSize: 40,
+            align: "center",
+            dropShadow: true,
+            dropShadowAngle: 1.56,
+            dropShadowDistance: 2,
+            dropShadowColor: "#8d2488",
+            breakWords: true,
+            wordWrap: true,
+            wordWrapWidth: button.width - 20,
+            letterSpacing: 2,
+          },
+        });
+
+        button.anchor.set(0.5);
+        button.cursor = "pointer";
+        button.interactive = true;
+        button_get.visible = false;
+        button.on("pointerdown", () => {
+          if (!win) {
+            launchBalls();
+          } else if (win) {
+            if ("openLink" in window) window.openLink();
+            else {
+              win = "";
+              filter.alpha = 0;
+              containerPopup.y = app.screen.height / containerGame.scale.x;
+              button_play.visible = true;
+              button_get.visible = false;
+              containerPopup.visible = false;
+              containerPlinko.visible = true;
+              button.interactive = true;
+            }
+          }
+        });
+        button_play.anchor.set(0.5);
+        button_get.anchor.set(0.5);
+
+        containerButton.addChild(button);
+        containerButton.addChild(button_play);
+        containerButton.addChild(button_get);
+        containerButton.position.set(0, 634); // Размещаем немного ниже
+        containerGame.addChild(containerButton);
+
+        containerGameView.addChild(containerGame);
+
+        app.stage.addChild(containerGameView);
+
+        setElementsByEvents({ scale: containerGame, ratio: background });
+
+        // ==========================
+        // ========  PLINKO  ========
+        // ==========================
+        MAP.textureBall = PIXI.Texture.from(ASSETS.ball);
+
+        const containerPlinko = createContainer("containerPlinko");
+        const basket = createSprite(ASSETS.basket, "basket");
+        const point_start = createSprite(ASSETS.point_start, "point_start");
+
+        point_start.anchor.set(0.5);
+        containerPlinko.position.set(0, 150);
+        containerPlinko.addChild(point_start);
+        containerGame.addChild(containerPlinko);
+
+        const POINT_SPACING_Y = 50;
+        const POINT_SPACING_X = basket.width + 10;
+        const BASKET_OFFSET_TOP = 185;
+
+        const containerPoints = createContainer("containerPoints");
+        containerPlinko.addChild(containerPoints);
+        containerPoints.position.set(0, 100);
+
+        const containerBaskets = createContainer("containerBaskets");
+        containerPlinko.addChild(containerBaskets);
+
+        let droppedBalls = 0;
+
+        function mapPoints() {
+          for (let row = 0; row < SETTING.plinko_rows; row++) {
+            const pointsInRow = SETTING.start_points + row;
+
+            const rowWidth = (pointsInRow - 1) * POINT_SPACING_X;
+
+            for (let i = 0; i < pointsInRow; i++) {
+              const point_path = createSprite(ASSETS.point_path, "point_path");
+              const path_light = createSprite(ASSETS.path_light, "path_light");
+
+              point_path.anchor.set(0.5);
+              path_light.anchor.set(0.5);
+
+              const x = i * POINT_SPACING_X - rowWidth / 2;
+              const y = row * POINT_SPACING_Y;
+
+              path_light.visible = false;
+              point_path.position.set(x, y);
+              point_path.addChild(path_light);
+              containerPoints.addChild(point_path);
+            }
+          }
+          mapBaskets();
+        }
+
+        function mapBaskets() {
+          const lastRow = SETTING.plinko_rows - 1;
+          const pointsInLastRow = SETTING.start_points + lastRow;
+          const lenghtBasketArr = pointsInLastRow - 1;
+          const rowWidth = lenghtBasketArr * POINT_SPACING_X + 1;
+
+          const y =
+            point_start.y + lastRow * POINT_SPACING_Y + BASKET_OFFSET_TOP;
+
+          const maxMultiplier = 50; // максимально возможный множитель
+          const step = 4;
+
+          const centerArr =
+            lenghtBasketArr % 2 === 1
+              ? [Math.floor(lenghtBasketArr / 2)]
+              : [lenghtBasketArr / 2 - 1, lenghtBasketArr / 2];
+
+          for (let i = 0; i < lenghtBasketArr; i++) {
+            const x =
+              i * POINT_SPACING_X + POINT_SPACING_X / 2 - rowWidth / 2 + 1;
+
+            const containerBasket = createContainer("containerBasket");
+            const distFromCenter = Math.min(
+              ...centerArr.map((centerIndex) => Math.abs(i - centerIndex))
+            );
+            const multiplier = Math.pow(step, distFromCenter) * 0.5;
+
+            const basketText = new PIXI.Text({
+              text: `x${multiplier}`,
+              style: {
+                fontFamily: FONT.name,
+                fill: 0xffffff,
+                fontSize: 20,
+                align: "center",
+              },
+            });
+            basketText.anchor.set(0.5, 0.25);
+            const basket = createSprite(ASSETS.basket, "basket");
+
+            containerBasket.position.set(x, y);
+            containerBasket.addChild(basket);
+            containerBasket.addChild(basketText);
+            containerBaskets.addChild(containerBasket);
+            basket.anchor.set(0.5);
+          }
+        }
+
+        mapPoints();
+        // Номера левых крайних шаров
+        let leftStart = 1;
+        const leftOuterPoint = Array.from(
+          { length: SETTING.plinko_rows },
+          (_, i) => {
+            if (!i) return leftStart;
+            leftStart += i + SETTING.start_points - 1;
+            return leftStart;
+          }
+        );
+
+        // Номера правых крайних шаров
+        let rightStart = SETTING.start_points;
+        const rightOuterPoint = Array.from(
+          { length: SETTING.plinko_rows },
+          (_, i) => {
+            if (!i) return rightStart;
+            rightStart += i + SETTING.start_points;
+            return rightStart;
+          }
+        );
+
+        MAP.sparkTextures = assets
+          .filter((v) => v.includes("spark"))
+          .map((asset) => PIXI.Assets.get(asset));
+
+        MAP.balls = [];
+
+        function launchBall() {
+          // шарик
+          const ball = createSprite(MAP.textureBall, "ball", { isFrom: false });
+          ball.anchor.set(0.5);
+          ball.visible = false;
+          containerPlinko.addChild(ball);
+          MAP.balls.push(ball);
+          ball.position.set(point_start.x, point_start.y);
+          ball.visible = true;
+          const baskets = containerBaskets.children;
+          const BALL_RADIUS = ball.width / 2;
+
+          const gravity = 1200,
+            termVel = 800;
+          const bounceH = 120,
+            bounceV = -100;
+          let velY = 0,
+            velX = (Math.random() * 2 - 1) * bounceH;
+          const cooldown = 0;
+
+          const points = containerPoints.children;
+          const lastBounce = new Array(points.length).fill(-Infinity);
+          let elapsed = 0;
+
+          const update = (ticker) => {
+            const dtMS = Math.min(ticker.deltaMS, 100);
+            const dtSec = dtMS / 1000;
+            const dt = ticker.deltaTime;
+            elapsed += dtMS;
+
+            velY = Math.min(velY + gravity * dtSec, termVel);
+            ball.x += velX * dtSec;
+            ball.y += velY * dtSec;
+
+            // проверка столкновений
+            for (let i = 0; i < points.length; i++) {
+              const p = points[i];
+              const pinX = p.x + containerPoints.position.x;
+              const pinY = p.y + containerPoints.position.y;
+
+              const dx = ball.x - pinX;
+              const dy = ball.y - pinY;
+              const dist = Math.hypot(dx, dy);
+
+              const ballRadius = ball.width / 2;
+              const pinRadius = p.width / 2;
+              const collisionDistance = ballRadius + pinRadius;
+
+              if (dist < collisionDistance) {
+                // Свечеие при соприкосновении
+                const path_light = p.getChildByName("path_light");
+                path_light.visible = true;
+                path_light.alpha = 0;
+                const tickerLight = createTicker();
+                tickerLight.add(({ deltaTime }) => {
+                  path_light.alpha += deltaTime / 15;
+                });
+                tickerLight.start();
+                setTimeout(() => {
+                  if (!path_light) return;
+                  path_light.visible = false;
+                  path_light.alpha = 0;
+                  tickerLight.stop();
+                }, 300);
+                // Если нужен настраиваемый сценарий vvvvvv
+                // let forceDirection = Math.random() < 0.5 ? -1 : 1;
+                let forceDirection = null;
+                const nx = dx / dist;
+                const ny = dy / dist;
+
+                // Выталкиваем шарик на границу, чтобы исключить повторные столкновения
+                const overlap = collisionDistance - dist;
+                ball.x += nx * overlap;
+                ball.y += ny * overlap;
+
+                // Случай когда столкнулся в крайней точкой
+                const isRight = rightOuterPoint.includes(i + 1);
+                const isLeft = leftOuterPoint.includes(i + 1);
+                const path = isRight ? -1 : isLeft ? 1 : null;
+
+                // Обновляем скорость в направлении от пина
+                const bounceSpeed = Math.hypot(velX, velY); // текущая энергия
+
+                // Альтернатива: усилить, если слабый импульс
+                const minImpulse = 145;
+                const impulse = Math.min(bounceSpeed, minImpulse);
+                if (path || forceDirection) {
+                  velX = (path || forceDirection) * impulse;
+                } else {
+                  velX = nx * impulse;
+                }
+                velY = ny * impulse;
+
+                lastBounce[i] = elapsed;
+                break;
+              }
+            }
+
+            // попадание шарика в корзину
+
+            for (let index = 0; index < baskets.length; index++) {
+              const basket = baskets[index];
+              const bx = basket.x + containerBaskets.position.x;
+              const by = basket.y + containerBaskets.position.y;
+
+              const dx = ball.x - bx;
+              const dy = ball.y - by;
+              const dist = Math.hypot(dx, dy);
+
+              const BASKET_RADIUS = basket.width / 1.5;
+              if (dist < BASKET_RADIUS || ball.y > by) {
+                tickerLaunch.stop();
+                tickerLaunch.destroy();
+                const spark = new PIXI.AnimatedSprite(MAP.sparkTextures);
+                ball.parent.addChild(spark);
+                spark.position.set(ball.x, ball.y);
+                spark.anchor.set(ball.anchor.x, ball.anchor.y);
+                spark.scale.set(ball.scale.x, ball.scale.y);
+                spark.rotation = ball.rotation;
+                spark.zIndex = ball.zIndex;
+                spark.loop = false;
+                spark.visible = true;
+                spark.play();
+                ball.destroy();
+                onBallInBasket(basket, index);
+                spark.onComplete = () => {
+                  spark.destroy();
+                };
+                return;
+              }
+            }
+          };
+
+          const tickerLaunch = createTicker();
+          tickerLaunch.add(update);
+          tickerLaunch.start();
+        }
+
+        const basketsOriginalPositions = containerBaskets.children.reduce(
+          (acc, bas, i) => ({ ...acc, [i]: { y: bas.y, x: bas.x } }),
+          {}
+        );
+
+        function onBallInBasket(basketContainer, index) {
+          const duration = 250; // длительность анимации в мс
+          const downFactor = 15; // во сколько раз увеличивается
+          const originalDown = basketsOriginalPositions[index].y;
+          const startTime = performance.now();
+
+          const ticker = createTicker();
+          ticker.add(() => {
+            const now = performance.now();
+            const elapsed = now - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+
+            const AnimationProgress = strongDampedBounce(progress, 3, 3); // 3 колебания, затухание
+
+            const offset = downFactor * AnimationProgress;
+            const currentDown =
+              1 + (downFactor - 1) * Math.abs(AnimationProgress);
+
+            basketContainer.y = originalDown + offset;
+
+            if (progress >= 1) {
+              basketContainer.y = originalDown;
+              ticker.stop();
+              ticker.destroy();
+            }
+          });
+
+          ticker.start();
+
+          function strongDampedBounce(t, bounces = 3, damping = 5) {
+            // t — прогресс [0,1]
+            // bounces — сколько колебаний минимум
+            // damping — насколько быстро они затухают (чем больше, тем сильнее затухание)
+            const oscillation = Math.cos(t * Math.PI * bounces);
+            const envelope = Math.exp(-damping * t);
+            return oscillation * envelope; // возвращает значение от 0 до 1
+          }
+
+          droppedBalls++;
+          if (droppedBalls === SETTING.ball_count) {
+            win = " ";
+            tickerModal.start();
+          }
+        }
+
+        // =========================
+        // ========  POPUP  ========
+        // =========================
+        let win = null;
+        const containerPopup = createContainer("containerPopup");
+        const popup = createSprite(ASSETS.popup, "popup");
+        const text_popup = new PIXI.Text({
+          text: TEXT.popup_title,
+          style: {
+            fontFamily: FONT.name,
+            fill: 0xffffff,
+            fontSize: 40,
+            align: "center",
+            breakWords: true,
+            wordWrap: true,
+            wordWrapWidth: popup.width - 20,
+            stroke: { color: "#2F41E1", width: 4 },
+          },
+        });
+        const text_description_popup = new PIXI.Text({
+          text: TEXT.popup_description,
+          style: {
+            fontFamily: FONT.name,
+            fill: 0xffffff,
+            fontSize: 30,
+            breakWords: true,
+            wordWrap: true,
+            wordWrapWidth: popup.width - 20,
+            align: "center",
+            stroke: { color: "#2F41E1", width: 4 },
+          },
+        });
+        popup.anchor.set(0.5);
+        text_popup.anchor.set(0.5);
+        text_description_popup.anchor.set(0.5);
+        containerPopup.position.set(0, containerGame.height);
+        text_popup.y = -130;
+
+        const filter = new PIXI.AlphaFilter(1);
+
+        containerPopup.filters = [filter];
+        filter.alpha = 0; // <-- tween this property
+        containerPopup.addChild(popup);
+        containerPopup.addChild(text_popup);
+        containerPopup.addChild(text_description_popup);
+        containerPopup.visible = false;
+        containerGame.addChild(containerPopup);
+
+        // =======================================
+        // ========  LOGIC AND FUNCTIONS  ========
+        // =======================================
+        const tickerModal = createTicker();
+        tickerModal.add((time) => {
+          if (win) {
+            let koef = 0.03;
+            const height = containerGame.height / 2;
+            containerPopup.visible = true;
+            button.interactive = true;
+            button_get.visible = true;
+            button_play.visible = false;
+            droppedBalls = 0;
+
+            if (filter.alpha <= 1) filter.alpha += time.deltaTime * koef;
+
+            if (
+              containerGame.height / 2 / containerGame.scale.x <
+              containerPopup.y
+            )
+              containerPopup.y -= 10;
+            else if (filter.alpha >= 1) tickerModal.stop();
+          }
+        });
+
+        function launchBalls() {
+          button.interactive = false;
+          const delay = 500;
+          const ballCount = SETTING.ball_count;
+
+          let elapsed = 0;
+          let launchedBalls = 0;
+
+          const ticker = createTicker();
+          ticker.add(() => {
+            elapsed += ticker.elapsedMS;
+
+            if (!launchedBalls || elapsed >= delay) {
+              elapsed = 0;
+              launchBall();
+              launchedBalls++;
+
+              if (launchedBalls >= ballCount) {
+                ticker.stop(); // остановить запуск после всех шаров
+              }
+            }
+          });
+
+          ticker.start(); // запуск
+        }
+
+        async function loadFont({ name, url }) {
+          if (!url) {
+            const link = document.createElement("link");
+            link.rel = "stylesheet";
+            link.href = `https://fonts.googleapis.com/css2?family=${name.replace(
+              / /g,
+              "+"
+            )}&display=swap`;
+            document.head.appendChild(link);
+          } else {
+            const font = new FontFace(name, `url(${url})`);
+            await font.load();
+            document.fonts.add(font);
+          }
+          const check = document.fonts.check(`12px "${name}"`);
+          if (!check) {
+            await document.fonts.load(`12px "${name}"`);
+          }
+        }
+
+        function createTicker() {
+          const ticker = new PIXI.Ticker();
+          ticker.add(() => {
+            if (!app.stage) {
+              ticker.stop();
+              ticker.destroy();
+            }
+          });
+          return ticker;
+        }
+
+        function createContainer(name = "") {
+          const container = new PIXI.Container();
+          container.label = name;
+          return container;
+        }
+
+        function createSprite(asset, name, { isFrom = true } = {}) {
+          const sprite = isFrom
+            ? PIXI.Sprite.from(asset)
+            : new PIXI.Sprite(asset);
+          sprite.label = name;
+          return sprite;
+        }
+
+        function createTexture({ asset }, name = "") {
+          const texture = PIXI.Texture.from(asset);
+          texture.label = name;
+          return texture;
+        }
+
+        function logoScaleDefaultSize(element) {
+          if (element.scale && element.texture) {
+            const DEFAULT_LOGO_SIZE = { width: 199, height: 104 };
+            const scaleX = DEFAULT_LOGO_SIZE.width / element.texture.width;
+            const scaleY = DEFAULT_LOGO_SIZE.height / element.texture.height;
+            const scaleMin = Math.min(scaleX, scaleY); // выбрать наименьший масштаб, чтобы вписаться
+            element.scale.set(scaleMin);
+          }
+        }
+
+        function setElementsByEvents({ scale, ratio }) {
+          if (scale) containersForScale.push(scale);
+          if (ratio) backgroundsForRatio.push(ratio);
+          handleResize();
+        }
+
+        // ================================
+        // ========  MAP EDITABLE  ========
+        // ================================
+        MAP.LoaderView = containerLoaderView;
+        MAP.GameView = containerGameView;
+        MAP.logoLoad = logoLoad;
+        MAP.loadBg = loadBg;
+        MAP.loadProgressBorder = loadProgressBorder;
+        MAP.loadProgressScale = loadProgressScale;
+        MAP.resizeObserver = resizeObserver;
+        MAP.button_play = button_play;
+        MAP.button_get = button_get;
+        MAP.popup_title = text_popup;
+        MAP.popup_description = text_description_popup;
+        MAP.background = background;
+        MAP.button = button;
+        MAP.logo = logo;
+        MAP.popup = popup;
+        MAP.bg_effect = bg_effect;
+        MAP.bg_element1 = bg_element1;
+        MAP.bg_element2 = bg_element2;
+        MAP.bg_element3 = bg_element3;
+        MAP.baskets = containerBaskets.children;
+        MAP.points = containerPoints.children;
+        MAP.point_start = point_start;
+      };
+      PLINKO_MECHANICS({ PIXI, INITIAL_VALUES });
+    </script>
+  </body>
+</html>

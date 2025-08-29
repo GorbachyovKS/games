@@ -1,0 +1,1031 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Slots</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+
+  <body>
+    <script src="https://pixijs.download/release/pixi.js"></script>
+    <script type="module">
+      const INITIAL_VALUES = {
+        ASSETS: {
+          background: "./background.webp", // BASE64
+          logo: "./logo.jpeg",
+          button: "./button.svg",
+          popup: "./popup.svg",
+
+          symb1: "./symb1.png",
+          symb2: "./symb2.png",
+          symb3: "./symb3.png",
+          symb4: "./symb4.png",
+          symb5: "./symb5.png",
+          symb6: "./symb6.png",
+          glow: "./glow.png",
+          layout: "./layout.svg",
+          loadBg: "./loadBg.webp",
+          loadProgressBorder: "./loadProgressBorder.webp",
+          loadProgressScale: "./loadProgressScale.webp",
+        },
+        TEXT: {
+          FONT: {
+            name: "Sansita",
+          },
+          button_play: "PLAY",
+          button_get: "GET",
+          popup_title: "Rewards!",
+          popup_description:
+            "Rewards description Lorem ipsum dolor sit amet consectetur adipisicing elit. Eos cupiditate, commodi doloremque similique consequatur esse aut quas explicabo magnam, perspiciatis suscipit et impedit corporis quis nulla consequuntur modi tenetur aperiam?!",
+        },
+        SETTING: {
+          slots: ["60$", "90$", "100$", "120$", "150$", "200$"],
+        },
+      };
+
+      export const textFitting = async ({ PIXI }) => {
+        // сохраняем оригинальный setter/getter
+        const desc = Object.getOwnPropertyDescriptor(
+          PIXI.Text.prototype,
+          "text"
+        );
+        const origSet = desc?.set;
+        const origGet = desc?.get;
+
+        function refreshText(textObj, currentText) {
+          if (typeof textObj._onStyleChange === "function") {
+            textObj._onStyleChange();
+          } else {
+            textObj._isFitting = true;
+            origSet?.call(textObj, "") ?? (textObj._text = "");
+            origSet?.call(textObj, currentText) ??
+              (textObj._text = currentText);
+            textObj._isFitting = false;
+          }
+        }
+
+        function fitTextToSize(textObj, maxW, maxH, options = {}) {
+          const { minFontSize = 0 } = options;
+          const maxFontSize =
+            options.maxFontSize ??
+            textObj._originalFontSize ??
+            textObj.style.fontSize;
+          const currentText = textObj.text;
+
+          const style = textObj.style;
+          textObj._originalFontSize =
+            textObj._originalFontSize ?? style.fontSize;
+
+          let low = minFontSize,
+            high = maxFontSize,
+            best = minFontSize;
+          while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            style.fontSize = mid;
+
+            // **Ноль перерисовок** — только сбор метрик
+            const metrics = PIXI.CanvasTextMetrics.measureText(
+              currentText,
+              style
+            );
+
+            if (
+              metrics.width <= maxW &&
+              metrics.lines.length * metrics.lineHeight <= maxH
+            ) {
+              best = mid;
+              low = mid + 1;
+            } else {
+              high = mid - 1;
+            }
+          }
+
+          style.fontSize = best;
+          refreshText(textObj, currentText);
+        }
+
+        // Переопределяем setter text
+        Object.defineProperty(PIXI.Text.prototype, "text", {
+          set(value) {
+            if (this._isFitting) {
+              origSet?.call(this, value) ?? (this._text = value);
+              return;
+            }
+            origSet?.call(this, value) ?? (this._text = value);
+
+            // если есть ограничения — запускаем подгонку
+            if ((this.maxWidthForFit || this.maxHeightForFit) && this.style) {
+              this._isFitting = true;
+              fitTextToSize(
+                this,
+                this.maxWidthForFit ?? this.style.wordWrapWidth ?? Infinity,
+                this.maxHeightForFit ?? Infinity,
+                {
+                  minFontSize: this.minFontSizeForFit,
+                  maxFontSize: this.maxFontSizeForFit,
+                }
+              );
+              this._isFitting = false;
+            }
+          },
+          get() {
+            return origGet?.call(this) ?? this._text;
+          },
+          configurable: true,
+          enumerable: true,
+        });
+
+        // Фабричная функция для аналогово создания PIXI.Text с подгонкой фитом
+        PIXI.Text.fit = function (content = {}, options = {}) {
+          const { text = "", style = {} } = content;
+          const inst = new PIXI.Text({ text, style });
+          if (options.maxWidth) inst.maxWidthForFit = options.maxWidth;
+          if (options.maxHeight) inst.maxHeightForFit = options.maxHeight;
+          if (options.minFontSize) inst.minFontSizeForFit = options.minFontSize;
+          if (options.maxFontSize) inst.maxFontSizeForFit = options.maxFontSize;
+          inst.fitToSize?.();
+          return inst;
+        };
+      };
+
+      textFitting({ PIXI });
+
+      export const SLOTS_MECHANICS = async ({
+        scene,
+        PIXI,
+        INITIAL_VALUES,
+        MAP = {},
+        PARENT_NODE = document.body,
+      }) => {
+        // ==================================
+        // ======= PARSE PARAMS START =======
+        // ==================================
+        const { ASSETS, TEXT, SETTING } = INITIAL_VALUES;
+        const { FONT = { name: "Arial", url: null } } = TEXT;
+        // загрузка шрифта
+        await loadFont(FONT);
+
+        // ======================================
+        // ======= INITIALIZATION APP START =====
+        // ======================================
+        const app = scene || new PIXI.Application();
+        if (!scene) {
+          await app.init({
+            resizeTo: window,
+            antialias: true,
+          });
+          globalThis.__PIXI_APP__ = app;
+          // globalThis.__PIXI_DEVTOOLS__ = { app };
+          document.body.appendChild(app.canvas);
+        }
+
+        // ======================================
+        // ======= RESIZE OBSERVER START =======
+        // ======================================
+        const containersForScale = [];
+        const backgroundsForRatio = [];
+        function handleResize() {
+          if (!app) return;
+
+          const { width: w, height: h } = app.screen;
+          const designWidth = 390;
+          const designHeight = 844;
+
+          const scale = Math.min(w / designWidth, h / designHeight);
+          const shouldScale = w < designWidth || h < designHeight;
+          const finalScale = shouldScale ? scale : 1;
+
+          containersForScale.forEach((container) => {
+            if (container) {
+              container.scale.set(finalScale);
+              setCenterElement(container);
+            }
+          });
+
+          backgroundsForRatio.forEach((asset) => {
+            if (asset) {
+              setAspectRatioElement(asset);
+            }
+          });
+        }
+
+        // Для выставления одиночных pivot, отход от поломки координат
+        const centeredElements = new WeakSet();
+
+        // Centered Elements By App
+        function setCenterElement(element) {
+          if (!centeredElements.has(element)) {
+            const bounds = element.getLocalBounds();
+            element.pivot.set(
+              bounds.x + bounds.width / 2,
+              bounds.y + bounds.height / 2
+            );
+            centeredElements.add(element);
+          }
+          element.position.set(app.screen.width / 2, app.screen.height / 2);
+        }
+
+        // Aspect Ratio Element
+        function setAspectRatioElement(element) {
+          const { width: appWidth, height: appHeight } = app.screen;
+          const aspectRatio = element.width / element.height;
+
+          element.position.set(appWidth / 2, appHeight / 2);
+          element.width = appWidth;
+          element.height = appWidth / aspectRatio;
+          if (appWidth / aspectRatio < appHeight) {
+            element.width = aspectRatio * appHeight;
+            element.height = appHeight;
+          }
+        }
+
+        const resizeObserver = new ResizeObserver(handleResize);
+        resizeObserver.observe(PARENT_NODE);
+
+        // =================================
+        // ======= LOADER VIEW START =======
+        // =================================
+
+        const ASSETS_LOADER = Object.entries(ASSETS)
+          .filter(([key]) => key.includes("load"))
+          .map(([, value]) => value)
+          .filter(Boolean);
+
+        // Загружаем assets для экрана loader
+        await PIXI.Assets.load(ASSETS_LOADER);
+
+        // Главный контейнер loader view
+        // containerLoaderView - Содержит containerLoader(Scale) + backgroundSprite(Ratio)
+        const containerLoaderView = createContainer("containerLoaderView");
+
+        const containerLoader = createContainer("containerLoader");
+
+        const loadBg = createSprite(ASSETS.loadBg, "loadBg");
+        loadBg.anchor.set(0.5);
+
+        const logoLoad = createSprite(
+          ASSETS.logo ?? PIXI.Texture.EMPTY,
+          "logoLoad",
+          {
+            isFrom: !!ASSETS.logo,
+          }
+        );
+        logoLoad.anchor.set(0.5);
+        logoLoad.position.set(0, -70);
+        logoScaleDefaultSize(logoLoad);
+
+        const containerLoadProgress = createContainer("containerLoadProgress");
+        containerLoadProgress.position.set(0, 70);
+
+        const loadProgressBorder = createSprite(
+          ASSETS.loadProgressBorder,
+          "loadProgressBorder"
+        );
+        const loadProgressScale = createSprite(
+          ASSETS.loadProgressScale,
+          "loadProgressScale"
+        );
+
+        loadProgressBorder.anchor.set(0.5);
+        loadProgressScale.x =
+          loadProgressBorder.x - loadProgressBorder.width / 2;
+        loadProgressScale.y =
+          loadProgressBorder.y - loadProgressBorder.height / 2;
+        loadProgressScale.width = 0;
+
+        const mask = new PIXI.Graphics();
+        mask.fill(0xffffff);
+        mask.roundRect(
+          -loadProgressBorder.width / 2 + 1,
+          -loadProgressBorder.height / 2 + 1,
+          loadProgressBorder.width - 2,
+          loadProgressBorder.height - 2,
+          10
+        );
+        mask.fill();
+
+        loadProgressScale.mask = mask;
+        containerLoadProgress.addChild(mask);
+        containerLoadProgress.addChild(loadProgressScale);
+        containerLoadProgress.addChild(loadProgressBorder);
+
+        containerLoader.addChild(logoLoad);
+        containerLoader.addChild(containerLoadProgress);
+
+        containerLoaderView.addChild(loadBg);
+        containerLoaderView.addChild(containerLoader);
+        app.stage.addChild(containerLoaderView);
+
+        setElementsByEvents({ scale: containerLoader, ratio: loadBg });
+
+        async function loadAssets(
+          assets,
+          expendScale,
+          fullWidth,
+          minDuration = 1500
+        ) {
+          return new Promise((resolve) => {
+            const startTime = performance.now();
+            let realProgress = 0;
+            let displayedProgress = 0;
+            let elapsed = 0;
+
+            const ticker = createTicker();
+            ticker.add(() => {
+              elapsed += ticker.elapsedMS;
+
+              const timeProgress = Math.min(elapsed / minDuration, 1);
+              const displayedProgress = Math.min(
+                1,
+                Math.min(realProgress, timeProgress)
+              );
+              expendScale.width = fullWidth * displayedProgress;
+
+              if (realProgress >= 1 && timeProgress >= 1) {
+                elapsed = 0;
+                expendScale.width = fullWidth;
+                ticker.stop();
+                resolve();
+              }
+            });
+
+            ticker.start(); // запуск
+
+            // Начинаем загрузку ассетов
+            PIXI.Assets.load(assets, (progress) => {
+              realProgress = progress;
+            });
+          });
+        }
+
+        const assets = Object.keys(ASSETS)
+          .map((key) => ASSETS[key])
+          .filter((v) => v);
+
+        await loadAssets(assets, loadProgressScale, loadProgressBorder.width);
+
+        // ==================================
+        // ======== GAME VIEW START  ========
+        // ==================================
+        // Содержит ContainerGame(Scale) + backgroundSprite(Ratio)
+        const containerGameView = createContainer("containerGameView");
+
+        const background = createSprite(ASSETS.background, "background");
+        background.anchor.set(0.5);
+        background.x = app.screen.width / 2;
+        background.y = app.screen.height / 2;
+        const openPopupBlur = new PIXI.BlurFilter(0);
+        const openPopupBrigthness = new PIXI.ColorMatrixFilter();
+        openPopupBrigthness.brightness(1);
+        background.filters = [openPopupBlur, openPopupBrigthness];
+        containerGameView.addChild(background);
+
+        // containerGame - содержит игру
+        const containerGame = createContainer("containerGame");
+
+        // ========================
+        // ========  LOGO  ========
+        // ========================
+        const containerLogo = createContainer("containerLogo");
+        const logo = createSprite(ASSETS.logo ?? PIXI.Texture.EMPTY, "logo", {
+          isFrom: !!ASSETS.logo,
+        });
+        logoScaleDefaultSize(logo);
+        logo.anchor.set(0.5);
+        containerLogo.addChild(logo);
+        containerLogo.position.set(0, 50); // Размещаем немного выше
+        containerGame.addChild(containerLogo);
+
+        // ==========================
+        // ========  BUTTON  ========
+        // ==========================
+        const containerButton = createContainer("containerButton");
+        const button = createSprite(ASSETS.button, "button");
+        const button_play = new PIXI.Text.fit(
+          {
+            text: TEXT.button_play,
+            style: {
+              fontFamily: FONT.name,
+              fill: 0xffffff,
+              fontSize: 40,
+              align: "center",
+              breakWords: true,
+              wordWrap: true,
+              wordWrapWidth: button.width - 20,
+              stroke: { color: "#2F41E1", width: 4 },
+            },
+          },
+          { maxHeight: button.height - 20 }
+        );
+
+        const button_get = new PIXI.Text.fit(
+          {
+            text: TEXT.button_get,
+            style: {
+              fontFamily: FONT.name,
+              fill: 0xffffff,
+              fontSize: 40,
+              align: "center",
+              breakWords: true,
+              wordWrap: true,
+              wordWrapWidth: button.width - 20,
+              stroke: { color: "#2F41E1", width: 4 },
+            },
+          },
+          { maxHeight: button.height - 20 }
+        );
+
+        button_get.visible = false;
+
+        button.anchor.set(0.5);
+        button.eventMode = "static";
+        button.cursor = "pointer";
+        button.interactive = true;
+        button.on("pointerdown", () => {
+          startPlay();
+        });
+        button_play.anchor.set(0.5);
+        button_get.anchor.set(0.5);
+
+        containerButton.addChild(button);
+
+        containerButton.addChild(button_play);
+        containerButton.addChild(button_get);
+
+        containerButton.position.set(0, 634); // Размещаем немного ниже
+        containerGame.addChild(containerButton);
+
+        containerGameView.addChild(containerGame);
+
+        app.stage.addChild(containerGameView);
+
+        setElementsByEvents({ scale: containerGame, ratio: background });
+
+        // =========================
+        // ========  SLOTS  ========
+        // =========================
+        const layout = createSprite(ASSETS.layout, "layout");
+
+        MAP.slotTextures = [
+          PIXI.Texture.from(ASSETS.symb1),
+          PIXI.Texture.from(ASSETS.symb2),
+          PIXI.Texture.from(ASSETS.symb3),
+          PIXI.Texture.from(ASSETS.symb4),
+          PIXI.Texture.from(ASSETS.symb5),
+          PIXI.Texture.from(ASSETS.symb6),
+        ];
+        MAP.slotSymbols = [];
+
+        const COUNT_REELS = 3;
+        const COUNT_SLOT_REEL = 3;
+        const REEL_WIDTH = layout.width / COUNT_REELS;
+        const SYMBOL_SIZE = Math.max(...MAP.slotTextures.map((t) => t.width));
+        const SYMBOL_SIZE_HEIGHT = Math.max(
+          ...MAP.slotTextures.map((t) => t.height)
+        );
+        const gapX =
+          (layout.width - COUNT_REELS * SYMBOL_SIZE) / (COUNT_REELS * 2);
+        const gapY =
+          (layout.height - COUNT_SLOT_REEL * SYMBOL_SIZE_HEIGHT) /
+          (COUNT_SLOT_REEL + 1);
+
+        // Build the reels
+        const reels = [];
+        const slotsMask = new PIXI.Graphics();
+        const containerSlots = createContainer("containerSlots");
+        containerSlots.filters = [openPopupBlur, openPopupBrigthness];
+
+        const reelContainer = createContainer("reelContainer");
+        for (let i = 0; i < COUNT_REELS; i++) {
+          const rc = createContainer("rc");
+
+          rc.x = i * (SYMBOL_SIZE + gapX * 2);
+          rc.y = -115;
+          reelContainer.addChild(rc);
+
+          const reel = {
+            container: rc,
+            symbols: [],
+            position: 0,
+            previousPosition: 0,
+            blur: new PIXI.BlurFilter(),
+          };
+
+          reel.blur.strengthX = 0;
+          reel.blur.strengthY = 0;
+          rc.filters = [reel.blur];
+
+          // Build the symbols
+          for (let j = 0; j < COUNT_SLOT_REEL + 1; j++) {
+            const symbol = createSprite(
+              MAP.slotTextures[
+                Math.floor(Math.random() * MAP.slotTextures.length)
+              ],
+              "symbol",
+              { isFrom: false }
+            );
+            MAP.slotSymbols.push(symbol);
+            // Scale the symbol to fit symbol area.
+            symbol.y = j * SYMBOL_SIZE_HEIGHT;
+            symbol.scale.x = symbol.scale.y = Math.min(
+              SYMBOL_SIZE / symbol.width,
+              SYMBOL_SIZE_HEIGHT / symbol.height
+            );
+            symbol.x = Math.round((SYMBOL_SIZE - symbol.width) / 2);
+            reel.symbols.push(symbol);
+            rc.addChild(symbol);
+          }
+          reels.push(reel);
+        }
+
+        containerSlots.pivot.set(containerSlots.width / 2, 0);
+        reelContainer.pivot.set(reelContainer.width / 2, 0);
+        containerSlots.position.set(0, 300);
+
+        layout.anchor.set(0.5);
+        containerSlots.addChild(layout);
+        containerSlots.addChild(slotsMask);
+        reelContainer.mask = slotsMask;
+        containerSlots.addChild(reelContainer);
+
+        const border = 15;
+        slotsMask
+          .fill(0xffffff)
+          .rect(0, 0, layout.width, layout.height - border)
+          .fill();
+        slotsMask.position.copyFrom(layout.position);
+        slotsMask.pivot.set(layout.width / 2, (layout.height - border) / 2);
+
+        containerGame.addChild(containerSlots);
+
+        let running = false;
+
+        // Function to start playing.
+        function startPlay() {
+          if (win) {
+            if ("openLink" in window) window.openLink();
+            else {
+              filter.alpha = 0;
+              button_play.visible = true;
+              button_get.visible = false;
+              containerPopup.visible = false;
+              containerPopup.scale.set(0);
+              containerPopup.y =
+                containerGame.height / 2 / containerGame.scale.x;
+              openPopupBlur.blur = 0;
+              openPopupBrigthness.brightness(1, false);
+
+              win = "";
+              reels.forEach((reel) => {
+                const glow = reel.container.getChildByName("glow");
+                if (glow) {
+                  reel.container.removeChild(glow);
+                  glow.destroy();
+                }
+              });
+            }
+            return;
+          }
+          if (running) return;
+          running = true;
+          const randomExtra = getRandomInt(0, 100);
+          const randomAmount = Math.random();
+          for (let i = 0; i < reels.length; i++) {
+            const r = reels[i];
+            const extra = randomExtra;
+            const target = r.position + 10 + i * 5 + extra;
+            const time = 1500 + i * 600;
+
+            winSymbolNumber = Math.floor(
+              Math.random() * MAP.slotTextures.length
+            );
+            r.target = target;
+            tweenTo(
+              r,
+              "position",
+              target,
+              time,
+              backout(randomAmount),
+              null,
+              i === reels.length - 1 ? reelsComplete : null
+            );
+          }
+        }
+
+        MAP.glow = PIXI.Texture.from(ASSETS.glow);
+
+        // Reels done handler.
+        function reelsComplete() {
+          reels.forEach((reel) => {
+            const ys = reel.symbols.map((s) => s.y);
+            const sorted = ys.slice().sort((a, b) => a - b);
+            const middleY = sorted[2];
+            const symbol = reel.symbols.find((s) => s.y === middleY);
+
+            const glow = createSprite(MAP.glow, "glow", { isFrom: false });
+            glow.anchor.set(0.5);
+            glow.position.set(
+              symbol.x + symbol.width / 2,
+              symbol.y + symbol.height / 2
+            );
+            glow.scale.set(symbol.scale.x, symbol.scale.y);
+            glow.zIndex = 1;
+            symbol.zIndex = 2;
+
+            reel.container.addChild(glow);
+          });
+
+          running = false;
+          startPopup();
+          win = " ";
+          text_description_popup.text = text_description_popup.text || win;
+        }
+
+        // Listen for animate update.
+        app.ticker.add(() => {
+          // Update the slots.
+          for (let i = 0; i < reels.length; i++) {
+            const r = reels[i];
+            // Update blur filter y amount based on speed.
+            // This would be better if calculated with time in mind also. Now blur depends on frame rate.
+
+            r.blur.strengthY = (r.position - r.previousPosition) * 8;
+            r.previousPosition = r.position;
+
+            // Update symbol positions on reel.
+            for (let j = 0; j < r.symbols.length; j++) {
+              const s = r.symbols[j];
+              const prevy = s.y;
+              s.y =
+                ((r.position + j) % r.symbols.length) *
+                  (SYMBOL_SIZE_HEIGHT + gapY) -
+                SYMBOL_SIZE_HEIGHT;
+              if (s.y < 0 && prevy > SYMBOL_SIZE) {
+                // Detect going over and swap a texture.
+                // This should in proper product be determined from some logical reel.
+                const numberSymbol =
+                  Math.abs(Math.round(r.target - r.position)) === 2
+                    ? winSymbolNumber
+                    : Math.floor(Math.random() * MAP.slotTextures.length);
+                s.texture = MAP.slotTextures[numberSymbol];
+                s.scale.x = s.scale.y = Math.min(
+                  SYMBOL_SIZE / s.texture.width,
+                  SYMBOL_SIZE / s.texture.height
+                );
+                s.x = Math.round((SYMBOL_SIZE - s.width) / 2);
+              }
+            }
+          }
+        });
+
+        // =========================
+        // ========  POPUP  ========
+        // =========================
+        let winSymbolNumber = 0;
+        let win = null;
+        const containerPopup = createContainer("containerPopup");
+        const popup = createSprite(ASSETS.popup, "popup");
+        const text_popup = new PIXI.Text.fit(
+          {
+            text: TEXT.popup_title,
+            style: {
+              fontFamily: FONT.name,
+              fill: 0xffffff,
+              fontSize: 40,
+              align: "center",
+              breakWords: true,
+              wordWrap: true,
+              wordWrapWidth: popup.width - 20,
+              stroke: { color: "#2F41E1", width: 4 },
+            },
+          },
+          { maxHeight: popup.height / 3 }
+        );
+
+        const text_description_popup = new PIXI.Text.fit(
+          {
+            text: TEXT.popup_description,
+            style: {
+              fontFamily: FONT.name,
+              fill: 0xffffff,
+              fontSize: 30,
+              breakWords: true,
+              wordWrap: true,
+              wordWrapWidth: popup.width - 20,
+              align: "center",
+              stroke: { color: "#2F41E1", width: 4 },
+            },
+          },
+          { maxHeight: popup.height / 2 - 20 }
+        );
+
+        popup.anchor.set(0.5);
+        text_popup.anchor.set(0.5, 0);
+        text_description_popup.anchor.set(0.5, 0);
+        containerPopup.position.set(0, containerGame.height);
+        text_popup.y = -160;
+
+        const filter = new PIXI.AlphaFilter(1);
+
+        containerPopup.filters = [filter];
+        filter.alpha = 0; // <-- tween this property
+        containerPopup.addChild(popup);
+        containerPopup.addChild(text_popup);
+        containerPopup.addChild(text_description_popup);
+        containerPopup.visible = false;
+        containerPopup.scale.set(0);
+        containerPopup.y = containerGame.height / 2 / containerGame.scale.x;
+        containerGame.addChild(containerPopup);
+
+        // =======================================
+        // ========  LOGIC AND FUNCTIONS  ========
+        // =======================================
+        const tweening = [];
+
+        function tweenTo(
+          object,
+          property,
+          target,
+          time,
+          easing,
+          onchange,
+          oncomplete
+        ) {
+          const tween = {
+            object,
+            property,
+            propertyBeginValue: object[property],
+            target,
+            easing,
+            time,
+            change: onchange,
+            complete: oncomplete,
+            start: Date.now(),
+          };
+
+          tweening.push(tween);
+
+          return tween;
+        }
+        // Listen for animate update.
+        app.ticker.add(() => {
+          const now = Date.now();
+          const remove = [];
+
+          for (let i = 0; i < tweening.length; i++) {
+            const t = tweening[i];
+            const phase = Math.min(1, (now - t.start) / t.time);
+
+            t.object[t.property] = lerpSlot(
+              t.propertyBeginValue,
+              t.target,
+              t.easing(phase)
+            );
+            if (t.change) t.change(t);
+            if (phase === 1) {
+              t.object[t.property] = t.target;
+              if (t.complete) t.complete(t);
+              remove.push(t);
+            }
+          }
+          for (let i = 0; i < remove.length; i++) {
+            tweening.splice(tweening.indexOf(remove[i]), 1);
+          }
+        });
+
+        // Basic lerp funtion.
+        function lerpSlot(a1, a2, t) {
+          return a1 * (1 - t) + a2 * t;
+        }
+
+        // Backout function from tweenjs.
+        function backout(amount) {
+          return (t) => --t * t * ((amount + 1) * t + amount) + 1;
+        }
+
+        // Get random Integer
+        // Reusable
+        function getRandomInt(min, max) {
+          const minCeiled = Math.ceil(min);
+          const maxFloored = Math.floor(max);
+          return Math.floor(
+            Math.random() * (maxFloored - minCeiled) + minCeiled
+          );
+        }
+
+        // ===================================
+        // ========  POPUP FUNCTIONS  ========
+        // ===================================
+
+        //стандартное появление попапа
+        function defaultPopupFunction(time) {
+          // Показываем попап и нужные кнопки
+          containerPopup.visible = true;
+
+          // Плавно увеличиваем прозрачность фильтра попапа
+          if (filter.alpha < 1) {
+            filter.alpha += 0.05;
+          }
+
+          // увеличиваем блюр
+          if (openPopupBlur.blur < 8) {
+            openPopupBlur.blur += 0.5;
+          }
+
+          bounceScale(containerPopup, time);
+
+          // увеличиваем затемнение
+          if (currentBrigthness > 0.5) {
+            currentBrigthness -= 0.05;
+            openPopupBrigthness.brightness(currentBrigthness, false);
+          }
+
+          if (
+            containerPopup.alpha >= 1 &&
+            filter.alpha >= 1 &&
+            elapsedPopup >= TOTAL_DURATION_POPUP
+          ) {
+            stopPopup();
+          }
+        }
+
+        //функция для управления не стандартными элементами
+        function customPopupFunction() {
+          button_play.visible = false;
+          button_get.visible = true;
+        }
+
+        function startPopup() {
+          elapsedPopup = 0;
+          containerPopup.scale.set(0.7);
+          tickerPopup.start();
+        }
+
+        function stopPopup() {
+          tickerPopup.stop();
+        }
+
+        let currentBrigthness = 1;
+        let elapsedPopup = 0;
+        const START_SCALE_POPUP = 0.65;
+        const PEAK_SCALE_POPUP = 1.15;
+        const END_SCALE_POPUP = 1.0;
+        const TOTAL_DURATION_POPUP = 0.7; // в секундах
+        // Ticker Popup upper
+        // Reusable
+        const tickerPopup = createTicker();
+        tickerPopup.add((time) => {
+          if (!win) return;
+          defaultPopupFunction(time);
+          customPopupFunction(time);
+        });
+
+        function bounceScale(sprite, delta) {
+          elapsedPopup += delta.deltaTime / 110; // переводим delta в секунды
+          const t = Math.min(elapsedPopup / TOTAL_DURATION_POPUP, 1); // нормализованное время [0..1]
+
+          let scale;
+          if (t < 0.6) {
+            const localT = t / 0.6;
+            scale = lerp(
+              START_SCALE_POPUP,
+              PEAK_SCALE_POPUP,
+              easeOutCubic(localT)
+            );
+          } else {
+            const localT = (t - 0.6) / 0.4;
+            scale = lerp(
+              PEAK_SCALE_POPUP,
+              END_SCALE_POPUP,
+              easeOutBounce(localT)
+            );
+          }
+          sprite.scale.set(scale);
+        }
+
+        // Линейная интерполяция
+        function lerp(a, b, t) {
+          return a + (b - a) * t;
+        }
+
+        // Ускоренный выход (для первой части)
+        function easeOutCubic(t) {
+          return 1 - Math.pow(1 - t, 3);
+        }
+
+        // Простейший bounce эффект
+        function easeOutBounce(t) {
+          const n1 = 7.5625;
+          const d1 = 2.75;
+
+          if (t < 1 / d1) {
+            return n1 * t * t;
+          } else if (t < 2 / d1) {
+            return n1 * (t -= 1.5 / d1) * t + 0.75;
+          } else if (t < 2.5 / d1) {
+            return n1 * (t -= 2.25 / d1) * t + 0.9375;
+          } else {
+            return n1 * (t -= 2.625 / d1) * t + 0.984375;
+          }
+        }
+
+        async function loadFont({ name, url }) {
+          if (!url) {
+            const link = document.createElement("link");
+            link.rel = "stylesheet";
+            link.href = `https://fonts.googleapis.com/css2?family=${name.replace(
+              / /g,
+              "+"
+            )}&display=swap`;
+            document.head.appendChild(link);
+          } else {
+            const font = new FontFace(name, `url(${url})`);
+            await font.load();
+            document.fonts.add(font);
+          }
+          const check = document.fonts.check(`12px "${name}"`);
+          if (!check) {
+            await document.fonts.load(`12px "${name}"`);
+          }
+        }
+
+        function createTicker() {
+          const ticker = new PIXI.Ticker();
+          ticker.add(() => {
+            if (!app.stage) {
+              ticker.stop();
+              ticker.destroy();
+            }
+          });
+          return ticker;
+        }
+
+        function createContainer(name = "") {
+          const container = new PIXI.Container();
+          container.label = name;
+          return container;
+        }
+
+        function createSprite(asset, name, { isFrom = true } = {}) {
+          const sprite = isFrom
+            ? PIXI.Sprite.from(asset)
+            : new PIXI.Sprite(asset);
+          sprite.label = name;
+          return sprite;
+        }
+
+        function createTexture({ asset }, name = "") {
+          const texture = PIXI.Texture.from(asset);
+          texture.label = name;
+          return texture;
+        }
+
+        function logoScaleDefaultSize(element) {
+          if (element.scale && element.texture) {
+            const DEFAULT_LOGO_SIZE = { width: 199, height: 104 };
+            const scaleX = DEFAULT_LOGO_SIZE.width / element.texture.width;
+            const scaleY = DEFAULT_LOGO_SIZE.height / element.texture.height;
+            const scaleMin = Math.min(scaleX, scaleY); // выбрать наименьший масштаб, чтобы вписаться
+            element.scale.set(scaleMin);
+          }
+        }
+
+        function setElementsByEvents({ scale, ratio }) {
+          if (scale) containersForScale.push(scale);
+          if (ratio) backgroundsForRatio.push(ratio);
+          handleResize();
+        }
+        // ================================
+        // ========  MAP EDITABLE  ========
+        // ================================
+        MAP.LoaderView = containerLoaderView;
+        MAP.GameView = containerGameView;
+        MAP.logoLoad = logoLoad;
+        MAP.loadBg = loadBg;
+        MAP.loadProgressBorder = loadProgressBorder;
+        MAP.loadProgressScale = loadProgressScale;
+        MAP.resizeObserver = resizeObserver;
+        MAP.button_play = button_play;
+        MAP.button_get = button_get;
+        MAP.popup_title = text_popup;
+        MAP.popup_description = text_description_popup;
+        MAP.background = background;
+        MAP.button = button;
+        MAP.logo = logo;
+        MAP.popup = popup;
+        MAP.layout = layout;
+      };
+      SLOTS_MECHANICS({ PIXI, INITIAL_VALUES });
+    </script>
+  </body>
+</html>
